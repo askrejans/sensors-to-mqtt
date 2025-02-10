@@ -189,4 +189,12 @@ impl Sensor for MPU6500 {
             values,
         })
     }
+
+    fn get_info(&self) -> Result<String> {
+        Ok(format!("MPU6500 IMU (addr: 0x{:02X}) - Accel: ±{}g, Gyro: ±{}°/s", 
+            self.address,
+            self.settings.accel_range,
+            self.settings.gyro_range
+        ))
+    }
 }

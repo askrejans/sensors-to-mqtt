@@ -18,6 +18,7 @@ pub enum SensorType {
 pub trait Sensor {
     fn init(&mut self) -> Result<()>;
     fn read(&mut self) -> Result<SensorData>;
+    fn get_info(&self) -> Result<String>;
 }
 
 #[derive(Debug, Clone)]
