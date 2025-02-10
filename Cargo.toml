@@ -1,0 +1,10 @@
+[package]
+name = "sensors-to-mqtt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+i2cdev = "0.6.1"
+linux-embedded-hal = "0.4.0"
+embedded-hal = "1.0.0"
+anyhow = "1.0"
