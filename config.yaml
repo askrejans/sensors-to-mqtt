@@ -1,0 +1,12 @@
+sensors:
+  - type: i2c
+    bus: /dev/i2c-1
+    devices:
+      - name: mpu6500_1
+        address: 0x68
+        driver: mpu6500
+        settings:
+          accel_range: 16    # ±16g
+          gyro_range: 2000   # ±2000°/s
+          sample_rate: 100   # Hz
+          samples_avg: 10    # Moving average samples
