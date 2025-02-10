@@ -1,8 +1,14 @@
-use std::{fs, thread, time::Duration};
-use std::io::{self, Write};
 use anyhow::Result;
+use std::io::{self, Write};
+use std::sync::Arc;
+use std::{fs, thread, time::Duration};
 
+mod config;
+mod mqtt_handler;
 mod sensors;
+
+use config::AppConfig;
+use mqtt_handler::MqttHandler;
 use sensors::{SensorConfig, SensorType};
 
 // Terminal control functions
@@ -11,7 +17,7 @@ fn move_cursor_up(lines: u16) {
 }
 
 fn clear_line() {
-    print!("\x1B[2K\r"); // Add \r to return cursor to start of line
+    print!("\x1B[2K\r");
 }
 
 fn clear_screen_from_cursor() {
@@ -30,7 +36,7 @@ fn display_startup_info(sensor_buses: &Vec<sensors::i2c::I2CBus>) -> u16 {
     let mut lines = 0;
     println!("🔍 Active Sensors:");
     lines += 1;
-    
+
     for (bus_idx, bus) in sensor_buses.iter().enumerate() {
         println!("Bus #{}", bus_idx + 1);
         println!("---------------");
@@ -44,20 +50,27 @@ fn display_startup_info(sensor_buses: &Vec<sensors::i2c::I2CBus>) -> u16 {
         println!();
         lines += 1;
     }
-    
+
     lines
 }
 
 fn main() -> Result<()> {
-    // Read config file
-    let config: SensorConfig = serde_yaml_ng::from_str(
-        &fs::read_to_string("config.yaml")?
-    )?;
-    
+    // Load configs
+    let sensor_config: SensorConfig = serde_yaml_ng::from_str(&fs::read_to_string("config.yaml")?)?;
+
+    let app_config = Arc::new(AppConfig {
+        mqtt_host: sensor_config.mqtt.host.clone(),
+        mqtt_port: sensor_config.mqtt.port,
+        mqtt_base_topic: sensor_config.mqtt.base_topic.clone(),
+    });
+
+    // Initialize MQTT handler
+    let mqtt_handler = MqttHandler::new(app_config.clone())
+        .map_err(|e| anyhow::anyhow!("Failed to create MQTT handler: {}", e))?;
+
     // Initialize sensor buses
     let mut sensor_buses = Vec::new();
-    
-    for sensor_type in config.sensors {
+    for sensor_type in sensor_config.sensors {
         match sensor_type {
             SensorType::I2C(config) => {
                 let bus = sensors::i2c::I2CBus::new(config)?;
@@ -70,29 +83,38 @@ fn main() -> Result<()> {
     print!("\x1B[2J\x1B[1;1H");
     println!("Sensors-to-MQTT System");
     println!("=====================\n");
-    
+
     // Display initial sensor info
     let info_lines = display_startup_info(&sensor_buses);
     println!("\nInitialization complete! Starting sensor readings...");
     io::stdout().flush().unwrap();
     thread::sleep(Duration::from_secs(3));
-    
+
     // Track total lines including header and sensor info
     let mut total_lines = 3 + info_lines;
-    
+
     loop {
         move_cursor_up(total_lines);
         clear_screen_from_cursor();
-        
+
         let info_lines = display_startup_info(&sensor_buses);
         total_lines = 3 + info_lines;
-        
-        // Display sensor readings
-        for (bus_idx, bus) in sensor_buses.iter_mut().enumerate() {
+
+        // Display and publish sensor readings
+        for bus in sensor_buses.iter_mut() {
             for device in &mut bus.devices {
                 match device.read() {
                     Ok(data) => {
-                        if let Some(angles) = calculate_angles(&data.values) {
+                        // Calculate angles first
+                        let angles = calculate_angles(&data.values);
+
+                        // Publish to MQTT with angles
+                        if let Err(e) = mqtt_handler.publish_sensor_data(&data, angles) {
+                            eprintln!("MQTT publish error: {}", e);
+                        }
+
+                        // Display data
+                        if let Some(angles) = angles {
                             total_lines += display_sensor_data(&data, &angles);
                         } else {
                             total_lines += display_raw_data(&data);
@@ -105,7 +127,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        
+
         io::stdout().flush().unwrap();
         thread::sleep(Duration::from_millis(10));
     }
@@ -117,9 +139,16 @@ fn calculate_angles(values: &[(String, f64)]) -> Option<(f64, f64)> {
 
     for (key, value) in values {
         match key.as_str() {
-            "accel_x" => { accel[0] = *value; has_accel = true; }
-            "accel_y" => { accel[1] = *value; }
-            "accel_z" => { accel[2] = *value; }
+            "accel_x" => {
+                accel[0] = *value;
+                has_accel = true;
+            }
+            "accel_y" => {
+                accel[1] = *value;
+            }
+            "accel_z" => {
+                accel[2] = *value;
+            }
             _ => {}
         }
     }
@@ -138,20 +167,31 @@ fn calculate_angles(values: &[(String, f64)]) -> Option<(f64, f64)> {
 
 fn display_sensor_data(data: &sensors::SensorData, angles: &(f64, f64)) -> u16 {
     let mut lines = 0;
-    
-    println!("\n📊 Sensor Data @ {}", 
+
+    println!(
+        "\n📊 Sensor Data @ {}",
         chrono::DateTime::from_timestamp_millis(data.timestamp)
             .unwrap()
-            .format("%H:%M:%S.%3f"));
+            .format("%H:%M:%S.%3f")
+    );
     lines += 2;
 
     println!("\n🎯 G-Forces:");
     lines += 2;
     for (key, value) in &data.values {
         match key.as_str() {
-            "accel_x" => { println!("  Lateral: {:.2} G", value); lines += 1; }
-            "accel_y" => { println!("  Forward: {:.2} G", value); lines += 1; }
-            "accel_z" => { println!("  Vertical: {:.2} G", value); lines += 1; }
+            "accel_x" => {
+                println!("  Lateral: {:.2} G", value);
+                lines += 1;
+            }
+            "accel_y" => {
+                println!("  Forward: {:.2} G", value);
+                lines += 1;
+            }
+            "accel_z" => {
+                println!("  Vertical: {:.2} G", value);
+                lines += 1;
+            }
             _ => {}
         }
     }
@@ -160,9 +200,18 @@ fn display_sensor_data(data: &sensors::SensorData, angles: &(f64, f64)) -> u16 {
     lines += 2;
     for (key, value) in &data.values {
         match key.as_str() {
-            "gyro_x" => { println!("  Roll: {:.2}", value); lines += 1; }
-            "gyro_y" => { println!("  Pitch: {:.2}", value); lines += 1; }
-            "gyro_z" => { println!("  Yaw: {:.2}", value); lines += 1; }
+            "gyro_x" => {
+                println!("  Roll: {:.2}", value);
+                lines += 1;
+            }
+            "gyro_y" => {
+                println!("  Pitch: {:.2}", value);
+                lines += 1;
+            }
+            "gyro_z" => {
+                println!("  Yaw: {:.2}", value);
+                lines += 1;
+            }
             _ => {}
         }
     }
@@ -177,17 +226,19 @@ fn display_sensor_data(data: &sensors::SensorData, angles: &(f64, f64)) -> u16 {
 
 fn display_raw_data(data: &sensors::SensorData) -> u16 {
     let mut lines = 0;
-    
-    println!("\n📊 Raw Data @ {}", 
+
+    println!(
+        "\n📊 Raw Data @ {}",
         chrono::DateTime::from_timestamp_millis(data.timestamp)
             .unwrap()
-            .format("%H:%M:%S.%3f"));
+            .format("%H:%M:%S.%3f")
+    );
     lines += 2;
-            
+
     for (key, value) in &data.values {
         println!("  {}: {:.3}", key, value);
         lines += 1;
     }
-    
+
     lines
 }

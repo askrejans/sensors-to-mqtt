@@ -24,7 +24,7 @@ pub struct I2CBus {
 impl I2CBus {
     pub fn new(config: I2CConfig) -> Result<Self> {
         let mut devices = Vec::new();
-        
+
         for device in config.devices {
             match device.driver.as_str() {
                 "mpu6500" => {
@@ -34,7 +34,7 @@ impl I2CBus {
                 _ => println!("Unsupported I2C device: {}", device.driver),
             }
         }
-        
+
         Ok(Self { devices })
     }
 }

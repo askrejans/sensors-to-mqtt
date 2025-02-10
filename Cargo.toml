@@ -10,4 +10,6 @@ embedded-hal = "1.0.0"
 anyhow = "1.0"
 serde = { version = "1.0.217", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
+serde_json = "1.0.138"
 chrono = "0.4.39"
+paho-mqtt = "0.12.5"

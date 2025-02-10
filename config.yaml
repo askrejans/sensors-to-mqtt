@@ -10,3 +10,7 @@ sensors:
           gyro_range: 2000   # ±2000°/s
           sample_rate: 100   # Hz
           samples_avg: 10    # Moving average samples
+mqtt:
+  host: "localhost"
+  port: 1883
+  base_topic: "GOLF86/SENSORS/IMU"

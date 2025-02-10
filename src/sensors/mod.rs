@@ -6,6 +6,14 @@ pub mod i2c;
 #[derive(Debug, Deserialize)]
 pub struct SensorConfig {
     pub sensors: Vec<SensorType>,
+    pub mqtt: MqttConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MqttConfig {
+    pub host: String,
+    pub port: u16,
+    pub base_topic: String,
 }
 
 #[derive(Debug, Deserialize)]
