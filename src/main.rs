@@ -11,7 +11,11 @@ fn move_cursor_up(lines: u16) {
 }
 
 fn clear_line() {
-    print!("\x1B[2K");
+    print!("\x1B[2K\r"); // Add \r to return cursor to start of line
+}
+
+fn clear_screen_from_cursor() {
+    print!("\x1B[J");
 }
 
 fn clear_lines(count: u16) {
@@ -22,25 +26,26 @@ fn clear_lines(count: u16) {
     move_cursor_up(count);
 }
 
-fn display_startup_info(sensor_buses: &Vec<sensors::i2c::I2CBus>) {
-    print!("\x1B[2J\x1B[1;1H"); // Clear screen once at startup
-    println!("Sensors-to-MQTT System");
-    println!("=====================");
-    println!("🔍 Detected Sensors:");
+fn display_startup_info(sensor_buses: &Vec<sensors::i2c::I2CBus>) -> u16 {
+    let mut lines = 0;
+    println!("🔍 Active Sensors:");
+    lines += 1;
     
     for (bus_idx, bus) in sensor_buses.iter().enumerate() {
-        println!("\nBus #{}", bus_idx + 1);
+        println!("Bus #{}", bus_idx + 1);
         println!("---------------");
+        lines += 2;
         for device in &bus.devices {
             if let Ok(info) = device.get_info() {
                 println!("✓ {}", info);
+                lines += 1;
             }
         }
+        println!();
+        lines += 1;
     }
     
-    println!("\nInitialization complete! Starting sensor readings...");
-    io::stdout().flush().unwrap();
-    thread::sleep(Duration::from_secs(3));
+    lines
 }
 
 fn main() -> Result<()> {
@@ -61,28 +66,32 @@ fn main() -> Result<()> {
         }
     }
 
-    // Display startup information
-    display_startup_info(&sensor_buses);
-    
-    // Clear screen once before starting main loop
+    // Initial full screen clear
     print!("\x1B[2J\x1B[1;1H");
-    println!("Sensor Readings");
-    println!("==============\n");
+    println!("Sensors-to-MQTT System");
+    println!("=====================\n");
+    
+    // Display initial sensor info
+    let info_lines = display_startup_info(&sensor_buses);
+    println!("\nInitialization complete! Starting sensor readings...");
     io::stdout().flush().unwrap();
+    thread::sleep(Duration::from_secs(3));
     
-    // Track number of lines to clear
-    let mut total_lines = 2;
+    // Track total lines including header and sensor info
+    let mut total_lines = 3 + info_lines;
     
-    // Main loop
     loop {
         move_cursor_up(total_lines);
-        total_lines = 2; // Reset counter
+        clear_screen_from_cursor();
         
+        // Redraw header and sensor info
+        println!("Sensors-to-MQTT System");
+        println!("=====================\n");
+        let info_lines = display_startup_info(&sensor_buses);
+        total_lines = 3 + info_lines;
+        
+        // Display sensor readings
         for (bus_idx, bus) in sensor_buses.iter_mut().enumerate() {
-            println!("\nBus #{}", bus_idx + 1);
-            println!("---------------");
-            total_lines += 3;
-            
             for device in &mut bus.devices {
                 match device.read() {
                     Ok(data) => {
