@@ -84,9 +84,6 @@ fn main() -> Result<()> {
         move_cursor_up(total_lines);
         clear_screen_from_cursor();
         
-        // Redraw header and sensor info
-        println!("Sensors-to-MQTT System");
-        println!("=====================\n");
         let info_lines = display_startup_info(&sensor_buses);
         total_lines = 3 + info_lines;
         
