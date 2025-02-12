@@ -1,24 +1,3 @@
-/// MPU6500 is a struct representing the MPU6500 IMU sensor.
-/// It provides methods to initialize, read, and calibrate the sensor, as well as to calculate angles from the sensor data.
-///
-/// # Fields
-/// - `i2c`: The I2C device used to communicate with the sensor.
-/// - `address`: The I2C address of the sensor.
-/// - `name`: The name of the sensor.
-/// - `settings`: The settings for the sensor, including accelerometer and gyroscope ranges, sample rate, and samples average.
-/// - `calibration`: The calibration data for the sensor, including accelerometer and gyroscope offsets.
-/// - `averages`: The moving average data for the sensor, including accelerometer and gyroscope values.
-///
-/// # Methods
-/// - `new(bus: &str, device: I2CDevice) -> Result<Self>`: Creates a new MPU6500 instance and initializes the sensor.
-/// - `read_sensor(&mut self, register: u8) -> Result<i16>`: Reads raw data from a specified register.
-/// - `calibrate(&mut self) -> Result<()>`: Calibrates the sensor by taking multiple readings and calculating offsets.
-/// - `read_raw(&mut self) -> Result<[i16; 6]>`: Reads raw accelerometer and gyroscope data from the sensor.
-/// - `calculate_angles(&self, values: &[(String, f64)]) -> Option<(f64, f64)>`: Calculates lean and bank angles from accelerometer data.
-/// - `init(&mut self) -> Result<()>`: Initializes the sensor by waking it up and configuring its settings.
-/// - `read(&mut self) -> Result<SensorData>`: Reads and processes sensor data, applying offsets and scaling, and updating moving averages.
-/// - `get_info(&self) -> Result<String>`: Returns a string with information about the sensor.
-/// - `display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)>`: Formats and returns sensor data for display.
 use super::I2CDevice;
 use crate::filters::kalman_1d::KalmanFilter1D;
 use crate::mqtt_handler::MqttHandler;
@@ -419,7 +398,7 @@ impl Sensor for MPU6500 {
         // Display filtered G-forces and turn rates side by side
         for i in 0..3 {
             if i < g_forces.len() && i < turn_rates.len() {
-                output.push_str(&format!("{} │ {}\n", g_forces[i], turn_rates[i]));
+                output.push_str(&format!("{}            │ {}             \n", g_forces[i], turn_rates[i]));
                 lines += 1;
             }
         }
