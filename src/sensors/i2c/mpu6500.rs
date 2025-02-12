@@ -375,7 +375,7 @@ impl Sensor for MPU6500 {
         lines += 1;
 
         // G-Forces section (aligned columns)
-        output.push_str("G-Forces │ Turn Rates\n");
+        output.push_str("G-Forces          │ Turn Rates        \n");
         output.push_str("──────────────────┼───────────────────\n");
         lines += 2;
 
@@ -398,7 +398,7 @@ impl Sensor for MPU6500 {
         // Display filtered G-forces and turn rates side by side
         for i in 0..3 {
             if i < g_forces.len() && i < turn_rates.len() {
-                output.push_str(&format!("{}            │ {}             \n", g_forces[i], turn_rates[i]));
+                output.push_str(&format!("{} │ {}\n", g_forces[i], turn_rates[i]));
                 lines += 1;
             }
         }
