@@ -167,34 +167,28 @@ impl MPU6500 {
     }
 
     fn calculate_angles(&self, values: &[(String, f64)]) -> Option<(f64, f64)> {
+        // Use the filtered “raw” values for angle calculations
         let mut accel = [0.0; 3];
-        let mut has_accel = false;
-
         for (key, value) in values {
+            // We expect keys: "accel_raw_0", "accel_raw_1", "accel_raw_2"
             match key.as_str() {
-                "accel_x" => {
-                    accel[0] = *value;
-                    has_accel = true;
-                }
-                "accel_y" => {
-                    accel[1] = *value;
-                }
-                "accel_z" => {
-                    accel[2] = *value;
-                }
+                "accel_raw_0" => accel[0] = *value,
+                "accel_raw_1" => accel[1] = *value,
+                "accel_raw_2" => accel[2] = *value,
                 _ => {}
             }
         }
 
-        if !has_accel {
+        // If we didn’t find the raw accelerations, bail out
+        if accel == [0.0, 0.0, 0.0] {
             return None;
         }
 
+        // Same angle calculation as before
         let ax2 = accel[0] * accel[0];
         let az2 = accel[2] * accel[2];
-        let lean_angle = (accel[1] / (ax2 + az2).sqrt()).atan() * 180.0 / std::f64::consts::PI;
-        let bank_angle = (accel[0] / accel[2].abs()).atan() * 180.0 / std::f64::consts::PI;
-
+        let lean_angle = (accel[1] / (ax2 + az2).sqrt()).atan().to_degrees();
+        let bank_angle = (accel[0] / accel[2].abs()).atan().to_degrees();
         Some((lean_angle, bank_angle))
     }
 
@@ -257,28 +251,6 @@ impl MPU6500 {
     }
 }
 
-/// Implementation of the `Sensor` trait for the `MPU6500` struct.
-///
-/// This implementation provides methods to initialize the sensor, read data from it,
-/// retrieve sensor information, and display the sensor data in a formatted manner.
-///
-/// # Methods
-///
-/// - `init(&mut self) -> Result<()>`
-///   - Initializes the MPU6500 sensor by waking it up, configuring the sample rate divider,
-///     and setting the accelerometer and gyroscope ranges based on the provided settings.
-///
-/// - `read(&mut self) -> Result<SensorData>`
-///   - Reads raw data from the sensor, applies offsets and scaling, updates moving averages,
-///     and converts the raw data to scaled values. Returns the sensor data as a `SensorData` struct.
-///
-/// - `get_info(&self) -> Result<String>`
-///   - Returns a string containing information about the sensor, including its name, address,
-///     accelerometer range, and gyroscope range.
-///
-/// - `display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)>`
-///   - Formats the sensor data into a human-readable string, including G-forces, turn rates,
-///     and angles. Returns the number of lines in the output and the formatted string.
 impl Sensor for MPU6500 {
     fn as_mpu6500(&self) -> Option<&MPU6500> {
         Some(self)
@@ -318,7 +290,7 @@ impl Sensor for MPU6500 {
 
     fn read(&mut self) -> Result<SensorData> {
         let raw = self.read_raw()?;
-        let mut filtered_values = Vec::new();
+        let mut values = Vec::new();
 
         // Scale factors
         let accel_scale = match self.settings.accel_range {
@@ -328,7 +300,6 @@ impl Sensor for MPU6500 {
             2 => 16384.0,
             _ => 2048.0,
         };
-
         let gyro_scale = match self.settings.gyro_range {
             2000 => 16.4,
             1000 => 32.8,
@@ -337,50 +308,44 @@ impl Sensor for MPU6500 {
             _ => 16.4,
         };
 
-        // First process raw accelerometer data
+        // Compute raw accelerations
         let mut raw_accel = [0.0; 3];
         for i in 0..3 {
             raw_accel[i] = (raw[i] as i32 - self.calibration.accel_offsets[i]) as f64 / accel_scale;
         }
 
-        // Remove gravity effect
+        // Compute gravity-removed accelerations (for G-forces)
         let linear_accel = self.remove_gravity(raw_accel);
 
-        // Process and filter linear acceleration
+        // Filter both raw and linear accelerations (store differently)
+        // 1) Filtered raw accelerations (used for angle calculations)
+        let mut filtered_raw_accel = [0.0; 3];
         for i in 0..3 {
-            let filtered_accel = self.accel_filters[i].update(linear_accel[i]);
-            filtered_values.push((
-                match i {
-                    0 => "accel_x",
-                    1 => "accel_y",
-                    _ => "accel_z",
-                }
-                .to_string(),
-                filtered_accel,
-            ));
+            filtered_raw_accel[i] = self.accel_filters[i].update(raw_accel[i]);
+            values.push((format!("accel_raw_{}", i), filtered_raw_accel[i]));
         }
 
-        // Process gyroscope data as before
+        // 2) Filtered linear accelerations (used for g-forces)
+        let mut filtered_linear_accel = [0.0; 3];
+        for i in 0..3 {
+            filtered_linear_accel[i] = self.accel_filters[i].update(linear_accel[i]);
+            values.push((format!("accel_lin_{}", i), filtered_linear_accel[i]));
+        }
+
+        // Filtered gyro data
         for i in 0..3 {
             let raw_gyro =
                 (raw[i + 3] as i32 - self.calibration.gyro_offsets[i]) as f64 / gyro_scale;
             let filtered_gyro = self.gyro_filters[i].update(raw_gyro);
-            filtered_values.push((
-                match i {
-                    0 => "gyro_x",
-                    1 => "gyro_y",
-                    _ => "gyro_z",
-                }
-                .to_string(),
-                filtered_gyro,
-            ));
+            values.push((format!("gyro_{}", i), filtered_gyro));
         }
 
+        // Return sensor data
         Ok(SensorData {
             timestamp: chrono::Utc::now().timestamp_millis(),
             device_name: self.name.clone(),
             sample_rate: self.settings.sample_rate,
-            values: filtered_values,
+            values,
         })
     }
 
