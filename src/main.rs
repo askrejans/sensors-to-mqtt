@@ -252,7 +252,7 @@ fn main() -> Result<()> {
         }
 
         screen.flush()?;
-        thread::sleep(Duration::from_millis(100)); // Reduced refresh rate to prevent flashing
+        thread::sleep(Duration::from_millis(10));
     }
 
     Ok(())
