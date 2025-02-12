@@ -47,6 +47,34 @@ struct AverageData {
 }
 
 impl MPU6500 {
+    fn remove_gravity(&self, raw_accel: [f64; 3]) -> [f64; 3] {
+        // Estimate gravity components using complementary filter
+        let gravity_magnitude = 1.0; // 1G
+        let total_magnitude =
+            (raw_accel[0].powi(2) + raw_accel[1].powi(2) + raw_accel[2].powi(2)).sqrt();
+
+        // Scale factor to normalize gravity vector
+        let scale = if total_magnitude != 0.0 {
+            gravity_magnitude / total_magnitude
+        } else {
+            0.0
+        };
+
+        // Estimate gravity components
+        let gravity = [
+            raw_accel[0] * scale,
+            raw_accel[1] * scale,
+            raw_accel[2] * scale,
+        ];
+
+        // Remove gravity to get linear acceleration
+        [
+            raw_accel[0] - gravity[0],
+            raw_accel[1] - gravity[1],
+            raw_accel[2] - gravity[2],
+        ]
+    }
+
     pub fn new(bus: &str, device: I2CDevice) -> Result<Self> {
         let i2c = I2cdev::new(bus).context("Failed to open I2C device")?;
         let settings: MPU6500Settings = serde_yaml_ng::from_value(device.settings)?;
@@ -290,8 +318,9 @@ impl Sensor for MPU6500 {
 
     fn read(&mut self) -> Result<SensorData> {
         let raw = self.read_raw()?;
+        let mut filtered_values = Vec::new();
 
-        // Apply scaling factors as before
+        // Scale factors
         let accel_scale = match self.settings.accel_range {
             16 => 2048.0,
             8 => 4096.0,
@@ -308,14 +337,18 @@ impl Sensor for MPU6500 {
             _ => 16.4,
         };
 
-        // Process and filter data
-        let mut filtered_values = Vec::new();
-
-        // Process accelerometer data
+        // First process raw accelerometer data
+        let mut raw_accel = [0.0; 3];
         for i in 0..3 {
-            let raw_accel =
-                (raw[i] as i32 - self.calibration.accel_offsets[i]) as f64 / accel_scale;
-            let filtered_accel = self.accel_filters[i].update(raw_accel);
+            raw_accel[i] = (raw[i] as i32 - self.calibration.accel_offsets[i]) as f64 / accel_scale;
+        }
+
+        // Remove gravity effect
+        let linear_accel = self.remove_gravity(raw_accel);
+
+        // Process and filter linear acceleration
+        for i in 0..3 {
+            let filtered_accel = self.accel_filters[i].update(linear_accel[i]);
             filtered_values.push((
                 match i {
                     0 => "accel_x",
@@ -327,7 +360,7 @@ impl Sensor for MPU6500 {
             ));
         }
 
-        // Process gyroscope data
+        // Process gyroscope data as before
         for i in 0..3 {
             let raw_gyro =
                 (raw[i + 3] as i32 - self.calibration.gyro_offsets[i]) as f64 / gyro_scale;
@@ -385,9 +418,9 @@ impl Sensor for MPU6500 {
 
         for (key, value) in &data.values {
             match key.as_str() {
-                "accel_x" => g_forces.push(format!("Lateral: {:6.3} G", value)),
-                "accel_y" => g_forces.push(format!("Forward: {:6.3} G", value)),
-                "accel_z" => g_forces.push(format!("Vertical:{:6.3} G", value)),
+                "accel_x" => g_forces.push(format!("Right:   {:6.3} G", value)), // Positive = right
+                "accel_y" => g_forces.push(format!("Forward: {:6.3} G", value)), // Positive = forward
+                "accel_z" => g_forces.push(format!("Up:      {:6.3} G", value)), // Positive = up
                 "gyro_x" => turn_rates.push(format!("Roll:  {:6.2}°/s", value)),
                 "gyro_y" => turn_rates.push(format!("Pitch: {:6.2}°/s", value)),
                 "gyro_z" => turn_rates.push(format!("Yaw:   {:6.2}°/s", value)),
