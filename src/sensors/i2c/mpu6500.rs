@@ -359,10 +359,8 @@ impl Sensor for MPU6500 {
     fn display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)> {
         let mut lines = 0;
         let mut output = String::new();
-
         let angles = self.calculate_angles(&data.values);
 
-        // Device header with timestamp and filter indication
         output.push_str(&format!(
             "Device: {} @ {}\n",
             self.name,
@@ -372,28 +370,25 @@ impl Sensor for MPU6500 {
         ));
         lines += 1;
 
-        // G-Forces section (aligned columns)
         output.push_str("G-Forces          │ Turn Rates        \n");
         output.push_str("──────────────────┼───────────────────\n");
         lines += 2;
 
-        // Prepare filtered values
         let mut g_forces = Vec::new();
         let mut turn_rates = Vec::new();
 
         for (key, value) in &data.values {
             match key.as_str() {
-                "accel_x" => g_forces.push(format!("Right:   {:6.3} G", value)), // Positive = right
-                "accel_y" => g_forces.push(format!("Forward: {:6.3} G", value)), // Positive = forward
-                "accel_z" => g_forces.push(format!("Up:      {:6.3} G", value)), // Positive = up
-                "gyro_x" => turn_rates.push(format!("Roll:  {:6.2}°/s", value)),
-                "gyro_y" => turn_rates.push(format!("Pitch: {:6.2}°/s", value)),
-                "gyro_z" => turn_rates.push(format!("Yaw:   {:6.2}°/s", value)),
+                "accel_lin_0" => g_forces.push(format!("Right:   {:6.3} G", value)),
+                "accel_lin_1" => g_forces.push(format!("Forward: {:6.3} G", value)),
+                "accel_lin_2" => g_forces.push(format!("Up:      {:6.3} G", value)),
+                "gyro_0" => turn_rates.push(format!("Roll:  {:6.2}°/s", value)),
+                "gyro_1" => turn_rates.push(format!("Pitch: {:6.2}°/s", value)),
+                "gyro_2" => turn_rates.push(format!("Yaw:   {:6.2}°/s", value)),
                 _ => {}
             }
         }
 
-        // Display filtered G-forces and turn rates side by side
         for i in 0..3 {
             if i < g_forces.len() && i < turn_rates.len() {
                 output.push_str(&format!("{} │ {}\n", g_forces[i], turn_rates[i]));
@@ -401,7 +396,6 @@ impl Sensor for MPU6500 {
             }
         }
 
-        // Angles section (calculated from filtered values)
         if let Some((lean, bank)) = angles {
             output.push_str("──────────────────┴───────────────────\n");
             output.push_str(&format!(
