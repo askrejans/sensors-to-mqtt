@@ -45,17 +45,57 @@ use sensors::{SensorConfig, SensorType};
 
 struct ScreenWriter {
     stdout: io::Stdout,
+    width: u16,
+    height: u16,
 }
 
 impl ScreenWriter {
     fn new() -> Self {
         let mut stdout = io::stdout();
-        // Enter alternate screen buffer and hide cursor
         stdout.execute(terminal::EnterAlternateScreen).unwrap();
         stdout.execute(cursor::Hide).unwrap();
         terminal::enable_raw_mode().unwrap();
 
-        Self { stdout }
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+
+        Self {
+            stdout,
+            width,
+            height,
+        }
+    }
+
+    fn write_at(&mut self, x: u16, y: u16, text: &str, color: Option<Color>) -> io::Result<()> {
+        self.stdout.queue(cursor::MoveTo(x, y))?;
+        if let Some(color) = color {
+            self.stdout.queue(SetForegroundColor(color))?;
+        }
+        self.stdout.queue(Print(text))?;
+        Ok(())
+    }
+
+    fn draw_box(&mut self, x: u16, y: u16, width: u16, height: u16) -> io::Result<()> {
+        // Draw top border
+        self.write_at(x, y, "┌", None)?;
+        self.write_at(x + width - 1, y, "┐", None)?;
+
+        // Draw sides
+        for dy in 1..height - 1 {
+            self.write_at(x, y + dy, "│", None)?;
+            self.write_at(x + width - 1, y + dy, "│", None)?;
+        }
+
+        // Draw bottom border
+        self.write_at(x, y + height - 1, "└", None)?;
+        self.write_at(x + width - 1, y + height - 1, "┘", None)?;
+
+        // Draw horizontal lines
+        for dx in 1..width - 1 {
+            self.write_at(x + dx, y, "─", None)?;
+            self.write_at(x + dx, y + height - 1, "─", None)?;
+        }
+
+        Ok(())
     }
 
     fn clear(&mut self) -> io::Result<()> {
@@ -91,22 +131,32 @@ fn display_startup_info(
     screen: &mut ScreenWriter,
     sensor_buses: &Vec<sensors::i2c::I2CBus>,
 ) -> Result<()> {
-    screen.write_line("Sensors-to-MQTT System", Some(Color::Green))?;
-    screen.write_line("=====================", Some(Color::Green))?;
-    screen.write_line("", None)?;
-    screen.write_line("🔍 Active Sensors:", Some(Color::Blue))?;
+    // Header
+    screen.write_at(2, 1, "Sensors-to-MQTT System", Some(Color::Green))?;
+    screen.draw_box(0, 0, screen.width, screen.height)?;
 
+    // Sensor panel
+    let panel_width = screen.width / 2;
+    screen.draw_box(1, 3, panel_width - 2, 10)?;
+    screen.write_at(3, 4, "🔍 Active Sensors", Some(Color::Blue))?;
+
+    let mut y = 5;
     for (bus_idx, bus) in sensor_buses.iter().enumerate() {
-        screen.write_line(&format!("Bus #{}", bus_idx + 1), Some(Color::Yellow))?;
-        screen.write_line("---------------", Some(Color::Yellow))?;
+        screen.write_at(3, y, &format!("Bus #{}", bus_idx + 1), Some(Color::Yellow))?;
+        y += 1;
 
         for device in &bus.devices {
             if let Ok(info) = device.get_info() {
-                screen.write_line(&format!("✓ {}", info), Some(Color::White))?;
+                screen.write_at(5, y, &format!("✓ {}", info), Some(Color::White))?;
+                y += 1;
             }
         }
-        screen.write_line("", None)?;
+        y += 1;
     }
+
+    // Data panel
+    screen.draw_box(panel_width + 1, 3, panel_width - 2, 10)?;
+    screen.write_at(panel_width + 3, 4, "📊 Sensor Data", Some(Color::Blue))?;
 
     screen.flush()?;
     Ok(())
