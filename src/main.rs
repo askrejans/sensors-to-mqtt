@@ -26,6 +26,13 @@ use std::{
     time::Duration,
 };
 
+use crossterm::{
+    cursor,
+    style::{Color, Print, SetForegroundColor},
+    terminal::{self, Clear, ClearType},
+    ExecutableCommand, QueueableCommand,
+};
+
 use anyhow::Result;
 
 mod config;
@@ -36,34 +43,73 @@ use config::AppConfig;
 use mqtt_handler::MqttHandler;
 use sensors::{SensorConfig, SensorType};
 
-fn move_cursor_up(lines: u16) {
-    print!("\x1B[{}A", lines);
+struct ScreenWriter {
+    stdout: io::Stdout,
 }
 
-fn clear_screen_from_cursor() {
-    print!("\x1B[J");
-}
+impl ScreenWriter {
+    fn new() -> Self {
+        let mut stdout = io::stdout();
+        // Enter alternate screen buffer and hide cursor
+        stdout.execute(terminal::EnterAlternateScreen).unwrap();
+        stdout.execute(cursor::Hide).unwrap();
+        terminal::enable_raw_mode().unwrap();
 
-fn display_startup_info(sensor_buses: &Vec<sensors::i2c::I2CBus>) -> u16 {
-    let mut lines = 0;
-    println!("🔍 Active Sensors:");
-    lines += 1;
-
-    for (bus_idx, bus) in sensor_buses.iter().enumerate() {
-        println!("Bus #{}", bus_idx + 1);
-        println!("---------------");
-        lines += 2;
-        for device in &bus.devices {
-            if let Ok(info) = device.get_info() {
-                println!("✓ {}", info);
-                lines += 1;
-            }
-        }
-        println!();
-        lines += 1;
+        Self { stdout }
     }
 
-    lines
+    fn clear(&mut self) -> io::Result<()> {
+        self.stdout
+            .queue(Clear(ClearType::All))?
+            .queue(cursor::MoveTo(0, 0))?;
+        Ok(())
+    }
+
+    fn write_line(&mut self, text: &str, color: Option<Color>) -> io::Result<()> {
+        if let Some(color) = color {
+            self.stdout.queue(SetForegroundColor(color))?;
+        }
+        self.stdout.queue(Print(text))?.queue(Print("\r\n"))?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stdout.flush()
+    }
+}
+
+impl Drop for ScreenWriter {
+    fn drop(&mut self) {
+        // Restore terminal state
+        let _ = terminal::disable_raw_mode();
+        let _ = self.stdout.execute(terminal::LeaveAlternateScreen);
+        let _ = self.stdout.execute(cursor::Show);
+    }
+}
+
+fn display_startup_info(
+    screen: &mut ScreenWriter,
+    sensor_buses: &Vec<sensors::i2c::I2CBus>,
+) -> Result<()> {
+    screen.write_line("Sensors-to-MQTT System", Some(Color::Green))?;
+    screen.write_line("=====================", Some(Color::Green))?;
+    screen.write_line("", None)?;
+    screen.write_line("🔍 Active Sensors:", Some(Color::Blue))?;
+
+    for (bus_idx, bus) in sensor_buses.iter().enumerate() {
+        screen.write_line(&format!("Bus #{}", bus_idx + 1), Some(Color::Yellow))?;
+        screen.write_line("---------------", Some(Color::Yellow))?;
+
+        for device in &bus.devices {
+            if let Ok(info) = device.get_info() {
+                screen.write_line(&format!("✓ {}", info), Some(Color::White))?;
+            }
+        }
+        screen.write_line("", None)?;
+    }
+
+    screen.flush()?;
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -91,26 +137,16 @@ fn main() -> Result<()> {
         }
     }
 
-    // Initial full screen clear
-    print!("\x1B[2J\x1B[1;1H");
-    println!("Sensors-to-MQTT System");
-    println!("=====================\n");
+    // Initialize screen writer
+    let mut screen = ScreenWriter::new();
 
-    // Display initial sensor info
-    let info_lines = display_startup_info(&sensor_buses);
-    println!("\nInitialization complete! Starting sensor readings...");
-    io::stdout().flush().unwrap();
+    // Initial display
+    display_startup_info(&mut screen, &sensor_buses)?;
     thread::sleep(Duration::from_secs(3));
 
-    // Track total lines including header and sensor info
-    let mut total_lines = 3 + info_lines;
-
     loop {
-        move_cursor_up(total_lines);
-        clear_screen_from_cursor();
-
-        let info_lines = display_startup_info(&sensor_buses);
-        total_lines = 3 + info_lines;
+        screen.clear()?;
+        display_startup_info(&mut screen, &sensor_buses)?;
 
         // Display and publish sensor readings
         for bus in sensor_buses.iter_mut() {
@@ -118,28 +154,31 @@ fn main() -> Result<()> {
                 match device.read() {
                     Ok(data) => {
                         // Get display data from sensor
-                        if let Ok((lines, Some(display_text))) = device.display_data(&data) {
-                            print!("{}", display_text);
-                            total_lines += lines;
+                        if let Ok((_, Some(display_text))) = device.display_data(&data) {
+                            screen.write_line(&display_text, Some(Color::Cyan))?;
                         }
 
                         // Publish to MQTT
                         if let Some(mpu6500) = device.as_mpu6500() {
                             if let Err(e) = mpu6500.publish_mqtt(&mqtt_handler, &data) {
-                                eprintln!("MQTT publish error for MPU6500: {}", e);
-                                total_lines += 1;
+                                screen.write_line(
+                                    &format!("MQTT publish error for MPU6500: {}", e),
+                                    Some(Color::Red),
+                                )?;
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error reading sensor: {}", e);
-                        total_lines += 1;
+                        screen.write_line(
+                            &format!("Error reading sensor: {}", e),
+                            Some(Color::Red),
+                        )?;
                     }
                 }
             }
         }
 
-        io::stdout().flush().unwrap();
+        screen.flush()?;
         thread::sleep(Duration::from_millis(10));
     }
 }
