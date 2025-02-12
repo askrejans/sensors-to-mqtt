@@ -74,15 +74,15 @@ impl MPU6500 {
 
         // Create Kalman filters with appropriate noise parameters
         let accel_filters = [
-            KalmanFilter1D::new(0.0001, 0.0025), // X-axis
-            KalmanFilter1D::new(0.0001, 0.0025), // Y-axis
-            KalmanFilter1D::new(0.0001, 0.0025), // Z-axis
+            KalmanFilter1D::new(0.00001, 0.05),  // X-axis (lateral)
+            KalmanFilter1D::new(0.00001, 0.05),  // Y-axis (forward)
+            KalmanFilter1D::new(0.000005, 0.08), // Z-axis (vertical)
         ];
 
         let gyro_filters = [
-            KalmanFilter1D::new(0.0001, 0.003), // X-axis
-            KalmanFilter1D::new(0.0001, 0.003), // Y-axis
-            KalmanFilter1D::new(0.0001, 0.003), // Z-axis
+            KalmanFilter1D::new(0.00005, 0.025), // Roll rate
+            KalmanFilter1D::new(0.00005, 0.025), // Pitch rate
+            KalmanFilter1D::new(0.00005, 0.025), // Yaw rate
         ];
 
         let mut sensor = Self {

@@ -12,29 +12,17 @@ pub struct KalmanFilter1D {
 }
 
 impl KalmanFilter1D {
-    /// Creates a new KalmanFilter1D instance
-    ///
-    /// # Arguments
-    /// * `q` - Process noise variance (how much we expect the true value to change between measurements)
-    /// * `r` - Measurement noise variance (how noisy our measurements are)
     pub fn new(q: f64, r: f64) -> Self {
         Self {
-            q,
-            r,
-            p: 1.0,
+            q,    // Process noise (lower = smoother, but less responsive)
+            r,    // Measurement noise (higher = more smoothing)
+            p: r, // Initialize P with R for better initial convergence
             x: 0.0,
             k: 0.0,
             initialized: false,
         }
     }
 
-    /// Updates the filter with a new measurement
-    ///
-    /// # Arguments
-    /// * `measurement` - The new measured value
-    ///
-    /// # Returns
-    /// The filtered estimate after incorporating the new measurement
     pub fn update(&mut self, measurement: f64) -> f64 {
         if !self.initialized {
             self.x = measurement;
@@ -42,27 +30,28 @@ impl KalmanFilter1D {
             return measurement;
         }
 
-        // Prediction step
-        self.p = self.p + self.q;
+        // Prediction step - simplified for better performance
+        self.p += self.q;
 
-        // Update step
+        // Update step with smoothing optimizations
         self.k = self.p / (self.p + self.r);
-        self.x = self.x + self.k * (measurement - self.x);
-        self.p = (1.0 - self.k) * self.p;
 
-        self.x
-    }
+        // Adaptive smoothing based on measurement delta
+        let delta = (measurement - self.x).abs();
+        let alpha = if delta > 1.0 {
+            // Faster response to large changes
+            self.k * 1.5
+        } else {
+            // More smoothing for small changes
+            self.k * 0.8
+        };
 
-    /// Resets the filter to its initial state
-    pub fn reset(&mut self) {
-        self.p = 1.0;
-        self.x = 0.0;
-        self.k = 0.0;
-        self.initialized = false;
-    }
+        self.x += alpha * (measurement - self.x);
+        self.p *= 1.0 - self.k;
 
-    /// Gets the current state estimate without updating
-    pub fn get_estimate(&self) -> f64 {
+        // Ensure P stays within reasonable bounds
+        self.p = self.p.clamp(self.r * 0.1, self.r * 10.0);
+
         self.x
     }
 }
