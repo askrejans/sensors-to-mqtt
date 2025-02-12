@@ -367,60 +367,53 @@ impl Sensor for MPU6500 {
 
         let angles = self.calculate_angles(&data.values);
 
+        // Device header with timestamp
         output.push_str(&format!(
-            "\n📊 {} Sensor Data @ {}\n",
+            "Device: {} @ {}\n",
             self.name,
             chrono::DateTime::from_timestamp_millis(data.timestamp)
                 .unwrap()
                 .format("%H:%M:%S.%3f")
         ));
+        lines += 1;
+
+        // G-Forces section (aligned columns)
+        output.push_str("G-Forces    │ Turn Rates\n");
+        output.push_str("────────────┼────────────\n");
         lines += 2;
 
-        output.push_str("\n🎯 G-Forces:\n");
-        lines += 2;
+        // Prepare values in advance
+        let mut g_forces = Vec::new();
+        let mut turn_rates = Vec::new();
+
         for (key, value) in &data.values {
             match key.as_str() {
-                "accel_x" => {
-                    output.push_str(&format!("  Lateral: {:.2} G\n", value));
-                    lines += 1;
-                }
-                "accel_y" => {
-                    output.push_str(&format!("  Forward: {:.2} G\n", value));
-                    lines += 1;
-                }
-                "accel_z" => {
-                    output.push_str(&format!("  Vertical: {:.2} G\n", value));
-                    lines += 1;
-                }
+                "accel_x" => g_forces.push(format!("Lateral: {:6.2} G", value)),
+                "accel_y" => g_forces.push(format!("Forward: {:6.2} G", value)),
+                "accel_z" => g_forces.push(format!("Vertical:{:6.2} G", value)),
+                "gyro_x" => turn_rates.push(format!("Roll:  {:6.1}°/s", value)),
+                "gyro_y" => turn_rates.push(format!("Pitch: {:6.1}°/s", value)),
+                "gyro_z" => turn_rates.push(format!("Yaw:   {:6.1}°/s", value)),
                 _ => {}
             }
         }
 
-        output.push_str("\n🔄 Turn Rate (°/s):\n");
-        lines += 2;
-        for (key, value) in &data.values {
-            match key.as_str() {
-                "gyro_x" => {
-                    output.push_str(&format!("  Roll: {:.2}\n", value));
-                    lines += 1;
-                }
-                "gyro_y" => {
-                    output.push_str(&format!("  Pitch: {:.2}\n", value));
-                    lines += 1;
-                }
-                "gyro_z" => {
-                    output.push_str(&format!("  Yaw: {:.2}\n", value));
-                    lines += 1;
-                }
-                _ => {}
+        // Display G-forces and turn rates side by side
+        for i in 0..3 {
+            if i < g_forces.len() && i < turn_rates.len() {
+                output.push_str(&format!("{} │ {}\n", g_forces[i], turn_rates[i]));
+                lines += 1;
             }
         }
 
+        // Angles section
         if let Some((lean, bank)) = angles {
-            output.push_str("\n📐 Angles:\n");
-            output.push_str(&format!("  Lean: {:.2}°\n", lean));
-            output.push_str(&format!("  Bank: {:.2}°\n", bank));
-            lines += 4;
+            output.push_str("────────────┴────────────\n");
+            output.push_str(&format!(
+                "Lean Angle: {:6.1}°  Bank Angle: {:6.1}°\n",
+                lean, bank
+            ));
+            lines += 2;
         }
 
         Ok((lines, Some(output)))

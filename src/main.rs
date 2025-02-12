@@ -27,9 +27,9 @@ use std::{
 };
 
 use crossterm::{
-    cursor,
+    cursor, event,
     style::{Color, Print, SetForegroundColor},
-    terminal::{self, Clear, ClearType},
+    terminal::self,
     ExecutableCommand, QueueableCommand,
 };
 
@@ -98,21 +98,6 @@ impl ScreenWriter {
         Ok(())
     }
 
-    fn clear(&mut self) -> io::Result<()> {
-        self.stdout
-            .queue(Clear(ClearType::All))?
-            .queue(cursor::MoveTo(0, 0))?;
-        Ok(())
-    }
-
-    fn write_line(&mut self, text: &str, color: Option<Color>) -> io::Result<()> {
-        if let Some(color) = color {
-            self.stdout.queue(SetForegroundColor(color))?;
-        }
-        self.stdout.queue(Print(text))?.queue(Print("\r\n"))?;
-        Ok(())
-    }
-
     fn flush(&mut self) -> io::Result<()> {
         self.stdout.flush()
     }
@@ -133,9 +118,15 @@ fn display_startup_info(
 ) -> Result<()> {
     // Header
     screen.write_at(2, 1, "Sensors-to-MQTT System", Some(Color::Green))?;
+    screen.write_at(
+        screen.width - 20,
+        1,
+        "Press 'q' to exit",
+        Some(Color::Yellow),
+    )?;
     screen.draw_box(0, 0, screen.width, screen.height)?;
 
-    // Sensor panel
+    // Sensor panel (left side)
     let panel_width = screen.width / 2;
     screen.draw_box(1, 3, panel_width - 2, 10)?;
     screen.write_at(3, 4, "🔍 Active Sensors", Some(Color::Blue))?;
@@ -154,8 +145,8 @@ fn display_startup_info(
         y += 1;
     }
 
-    // Data panel
-    screen.draw_box(panel_width + 1, 3, panel_width - 2, 10)?;
+    // Data panel (right side)
+    screen.draw_box(panel_width + 1, 3, panel_width - 2, screen.height - 4)?;
     screen.write_at(panel_width + 3, 4, "📊 Sensor Data", Some(Color::Blue))?;
 
     screen.flush()?;
@@ -192,11 +183,28 @@ fn main() -> Result<()> {
 
     // Initial display
     display_startup_info(&mut screen, &sensor_buses)?;
-    thread::sleep(Duration::from_secs(3));
+    let panel_width = screen.width / 2;
 
     loop {
-        screen.clear()?;
-        display_startup_info(&mut screen, &sensor_buses)?;
+        // Check for 'q' key press
+        if event::poll(Duration::from_millis(10))? {
+            if let event::Event::Key(key_event) = event::read()? {
+                if key_event.code == event::KeyCode::Char('q') {
+                    break;
+                }
+            }
+        }
+
+        // Clear only the data panel area
+        for y in 6..screen.height - 1 {
+            screen.write_at(
+                panel_width + 3,
+                y,
+                &" ".repeat((panel_width - 5) as usize),
+                None,
+            )?;
+        }
+        let mut data_y = 6;
 
         // Display and publish sensor readings
         for bus in sensor_buses.iter_mut() {
@@ -204,23 +212,38 @@ fn main() -> Result<()> {
                 match device.read() {
                     Ok(data) => {
                         // Get display data from sensor
-                        if let Ok((_, Some(display_text))) = device.display_data(&data) {
-                            screen.write_line(&display_text, Some(Color::Cyan))?;
+                        if let Ok((_lines, Some(display_text))) = device.display_data(&data) {
+                            // Split the display text into lines and write each line
+                            for line in display_text.lines() {
+                                if data_y < screen.height - 1 {
+                                    screen.write_at(
+                                        panel_width + 3,
+                                        data_y,
+                                        line,
+                                        Some(Color::Cyan),
+                                    )?;
+                                    data_y += 1;
+                                }
+                            }
                         }
 
                         // Publish to MQTT
                         if let Some(mpu6500) = device.as_mpu6500() {
                             if let Err(e) = mpu6500.publish_mqtt(&mqtt_handler, &data) {
-                                screen.write_line(
-                                    &format!("MQTT publish error for MPU6500: {}", e),
+                                screen.write_at(
+                                    panel_width + 3,
+                                    screen.height - 2,
+                                    &format!("MQTT error: {}", e),
                                     Some(Color::Red),
                                 )?;
                             }
                         }
                     }
                     Err(e) => {
-                        screen.write_line(
-                            &format!("Error reading sensor: {}", e),
+                        screen.write_at(
+                            panel_width + 3,
+                            screen.height - 2,
+                            &format!("Sensor error: {}", e),
                             Some(Color::Red),
                         )?;
                     }
@@ -229,6 +252,8 @@ fn main() -> Result<()> {
         }
 
         screen.flush()?;
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(100)); // Reduced refresh rate to prevent flashing
     }
+
+    Ok(())
 }
