@@ -1,7 +1,32 @@
+/// Main entry point for the Sensors-to-MQTT system.
+///
+/// This function performs the following steps:
+/// 1. Loads the sensor configuration from a YAML file.
+/// 2. Initializes the MQTT handler with the loaded configuration.
+/// 3. Initializes the sensor buses based on the configuration.
+/// 4. Clears the terminal screen and displays initial sensor information.
+/// 5. Enters an infinite loop where it periodically reads sensor data, displays it, and publishes it to the MQTT broker.
+///
+/// # Returns
+///
+/// * `Result<()>` - Returns `Ok(())` if the program runs successfully, or an error if any step fails.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// * The configuration file cannot be read or parsed.
+/// * The MQTT handler cannot be initialized.
+/// * Any sensor bus cannot be initialized.
+/// * Sensor data cannot be read or published to the MQTT broker.
+use std::{
+    fs,
+    io::{self, Write},
+    sync::Arc,
+    thread,
+    time::Duration,
+};
+
 use anyhow::Result;
-use std::io::{self, Write};
-use std::sync::Arc;
-use std::{fs, thread, time::Duration};
 
 mod config;
 mod mqtt_handler;
@@ -11,25 +36,12 @@ use config::AppConfig;
 use mqtt_handler::MqttHandler;
 use sensors::{SensorConfig, SensorType};
 
-// Terminal control functions
 fn move_cursor_up(lines: u16) {
     print!("\x1B[{}A", lines);
 }
 
-fn clear_line() {
-    print!("\x1B[2K\r");
-}
-
 fn clear_screen_from_cursor() {
     print!("\x1B[J");
-}
-
-fn clear_lines(count: u16) {
-    for _ in 0..count {
-        clear_line();
-        println!();
-    }
-    move_cursor_up(count);
 }
 
 fn display_startup_info(sensor_buses: &Vec<sensors::i2c::I2CBus>) -> u16 {
@@ -105,19 +117,18 @@ fn main() -> Result<()> {
             for device in &mut bus.devices {
                 match device.read() {
                     Ok(data) => {
-                        // Calculate angles first
-                        let angles = calculate_angles(&data.values);
-
-                        // Publish to MQTT with angles
-                        if let Err(e) = mqtt_handler.publish_sensor_data(&data, angles) {
-                            eprintln!("MQTT publish error: {}", e);
+                        // Get display data from sensor
+                        if let Ok((lines, Some(display_text))) = device.display_data(&data) {
+                            print!("{}", display_text);
+                            total_lines += lines;
                         }
 
-                        // Display data
-                        if let Some(angles) = angles {
-                            total_lines += display_sensor_data(&data, &angles);
-                        } else {
-                            total_lines += display_raw_data(&data);
+                        // Publish to MQTT
+                        if let Some(mpu6500) = device.as_mpu6500() {
+                            if let Err(e) = mpu6500.publish_mqtt(&mqtt_handler, &data) {
+                                eprintln!("MQTT publish error for MPU6500: {}", e);
+                                total_lines += 1;
+                            }
                         }
                     }
                     Err(e) => {
@@ -131,114 +142,4 @@ fn main() -> Result<()> {
         io::stdout().flush().unwrap();
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-fn calculate_angles(values: &[(String, f64)]) -> Option<(f64, f64)> {
-    let mut accel = [0.0; 3];
-    let mut has_accel = false;
-
-    for (key, value) in values {
-        match key.as_str() {
-            "accel_x" => {
-                accel[0] = *value;
-                has_accel = true;
-            }
-            "accel_y" => {
-                accel[1] = *value;
-            }
-            "accel_z" => {
-                accel[2] = *value;
-            }
-            _ => {}
-        }
-    }
-
-    if !has_accel {
-        return None;
-    }
-
-    let ax2 = accel[0] * accel[0];
-    let az2 = accel[2] * accel[2];
-    let lean_angle = (accel[1] / (ax2 + az2).sqrt()).atan() * 180.0 / std::f64::consts::PI;
-    let bank_angle = (accel[0] / accel[2].abs()).atan() * 180.0 / std::f64::consts::PI;
-
-    Some((lean_angle, bank_angle))
-}
-
-fn display_sensor_data(data: &sensors::SensorData, angles: &(f64, f64)) -> u16 {
-    let mut lines = 0;
-
-    println!(
-        "\n📊 Sensor Data @ {}",
-        chrono::DateTime::from_timestamp_millis(data.timestamp)
-            .unwrap()
-            .format("%H:%M:%S.%3f")
-    );
-    lines += 2;
-
-    println!("\n🎯 G-Forces:");
-    lines += 2;
-    for (key, value) in &data.values {
-        match key.as_str() {
-            "accel_x" => {
-                println!("  Lateral: {:.2} G", value);
-                lines += 1;
-            }
-            "accel_y" => {
-                println!("  Forward: {:.2} G", value);
-                lines += 1;
-            }
-            "accel_z" => {
-                println!("  Vertical: {:.2} G", value);
-                lines += 1;
-            }
-            _ => {}
-        }
-    }
-
-    println!("\n🔄 Turn Rate (°/s):");
-    lines += 2;
-    for (key, value) in &data.values {
-        match key.as_str() {
-            "gyro_x" => {
-                println!("  Roll: {:.2}", value);
-                lines += 1;
-            }
-            "gyro_y" => {
-                println!("  Pitch: {:.2}", value);
-                lines += 1;
-            }
-            "gyro_z" => {
-                println!("  Yaw: {:.2}", value);
-                lines += 1;
-            }
-            _ => {}
-        }
-    }
-
-    println!("\n📐 Angles:");
-    println!("  Lean: {:.2}°", angles.0);
-    println!("  Bank: {:.2}°", angles.1);
-    lines += 4;
-
-    lines
-}
-
-fn display_raw_data(data: &sensors::SensorData) -> u16 {
-    let mut lines = 0;
-
-    println!(
-        "\n📊 Raw Data @ {}",
-        chrono::DateTime::from_timestamp_millis(data.timestamp)
-            .unwrap()
-            .format("%H:%M:%S.%3f")
-    );
-    lines += 2;
-
-    for (key, value) in &data.values {
-        println!("  {}: {:.3}", key, value);
-        lines += 1;
-    }
-
-    lines
 }
