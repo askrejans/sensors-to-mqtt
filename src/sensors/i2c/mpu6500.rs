@@ -71,7 +71,7 @@ impl MPU6500 {
         [
             raw_accel[0] - gravity[0],
             raw_accel[1] - gravity[1],
-            raw_accel[2] - gravity[2],
+            raw_accel[2],
         ]
     }
 
