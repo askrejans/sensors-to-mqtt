@@ -1,58 +1,72 @@
 use serde::{Deserialize, Serialize};
 
-/// Represents a basic Kalman filter for 1-dimensional data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KalmanFilter1D {
-    q: f64,            // Process noise variance
-    r: f64,            // Measurement noise variance
-    p: f64,            // Estimation error covariance
-    x: f64,            // State estimate
-    k: f64,            // Kalman gain
-    initialized: bool, // Tracks if filter has received first measurement
+    q: f64,
+    r: f64,
+    p: f64,
+    x: f64,
+    k: f64,
+    initialized: bool,
+    dead_zone: f64,   // New: dead zone threshold
+    last_output: f64, // New: track last output for dead zone comparison
 }
 
 impl KalmanFilter1D {
     pub fn new(q: f64, r: f64) -> Self {
         Self {
-            q,    // Process noise (lower = smoother, but less responsive)
-            r,    // Measurement noise (higher = more smoothing)
-            p: r, // Initialize P with R for better initial convergence
+            q,
+            r,
+            p: r,
             x: 0.0,
             k: 0.0,
             initialized: false,
+            dead_zone: 0.01, // Default 0.01 units dead zone
+            last_output: 0.0,
         }
+    }
+
+    // New: Allow configuring dead zone threshold
+    pub fn with_dead_zone(mut self, threshold: f64) -> Self {
+        self.dead_zone = threshold;
+        self
     }
 
     pub fn update(&mut self, measurement: f64) -> f64 {
         if !self.initialized {
             self.x = measurement;
+            self.last_output = measurement;
             self.initialized = true;
             return measurement;
         }
 
-        // Prediction step - simplified for better performance
+        // Kalman filter prediction and update
         self.p += self.q;
-
-        // Update step with smoothing optimizations
         self.k = self.p / (self.p + self.r);
 
         // Adaptive smoothing based on measurement delta
         let delta = (measurement - self.x).abs();
         let alpha = if delta > 1.0 {
-            // Faster response to large changes
-            self.k * 1.5
+            self.k * 1.5 // Faster response to large changes
         } else {
-            // More smoothing for small changes
-            self.k * 0.8
+            self.k * 0.8 // More smoothing for small changes
         };
 
+        // Update state estimate
         self.x += alpha * (measurement - self.x);
         self.p *= 1.0 - self.k;
-
-        // Ensure P stays within reasonable bounds
         self.p = self.p.clamp(self.r * 0.1, self.r * 10.0);
 
-        self.x
+        // Dead zone filter
+        let change = (self.x - self.last_output).abs();
+        let output = if change < self.dead_zone {
+            self.last_output // No change if within dead zone
+        } else {
+            self.x // Use new value if change is significant
+        };
+
+        self.last_output = output;
+        output
     }
 }
 
@@ -84,5 +98,19 @@ mod tests {
         filter.reset();
         assert_eq!(filter.get_estimate(), 0.0);
         assert!(!filter.initialized);
+    }
+
+    #[test]
+    fn test_dead_zone() {
+        let mut filter = KalmanFilter1D::new(0.1, 0.1).with_dead_zone(0.1);
+        filter.update(1.0); // Initialize
+
+        // Small change within dead zone
+        let result = filter.update(1.05);
+        assert_eq!(result, 1.0); // Should maintain previous value
+
+        // Large change outside dead zone
+        let result = filter.update(1.2);
+        assert!(result > 1.0); // Should change
     }
 }
