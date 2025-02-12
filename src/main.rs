@@ -29,13 +29,13 @@ use std::{
 use crossterm::{
     cursor, event,
     style::{Color, Print, SetForegroundColor},
-    terminal::self,
-    ExecutableCommand, QueueableCommand,
+    terminal, ExecutableCommand, QueueableCommand,
 };
 
 use anyhow::Result;
 
 mod config;
+mod filters;
 mod mqtt_handler;
 mod sensors;
 
