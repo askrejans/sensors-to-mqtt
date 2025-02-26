@@ -13,4 +13,4 @@ sensors:
 mqtt:
   host: "localhost"
   port: 1883
-  base_topic: "GOLF86/SENSORS"
+  base_topic: "/GOLF86/SENSORS"
