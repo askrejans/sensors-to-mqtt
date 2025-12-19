@@ -231,7 +231,6 @@ impl Sensor for MPU6500 {
 
     fn read(&mut self) -> Result<SensorData> {
         let raw = self.read_raw()?;
-        let mut values = Vec::new();
 
         // Scale factors
         let accel_scale = match self.settings.accel_range {

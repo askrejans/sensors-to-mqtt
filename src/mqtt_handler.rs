@@ -36,14 +36,9 @@ impl MqttHandler {
         }
 
         log::info!("Attempting to reconnect to MQTT broker...");
-        
-        let conn_opts = mqtt::ConnectOptionsBuilder::new()
-            .keep_alive_interval(Duration::from_secs(self.config.mqtt.keep_alive_secs))
-            .clean_session(self.config.mqtt.clean_session)
-            .finalize();
 
         self.client
-            .reconnect(conn_opts)
+            .reconnect()
             .map_err(|e| format!("Failed to reconnect to MQTT broker: {}", e))?;
 
         log::info!("Reconnected to MQTT broker");
