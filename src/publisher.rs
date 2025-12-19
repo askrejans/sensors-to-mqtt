@@ -45,7 +45,8 @@ impl MqttPublisher {
 
         self.mqtt_handler
             .publish(&topic, &payload.to_string())
-            .map_err(|e| MqttError::PublishError(e).into())
+            .map_err(|e| MqttError::PublishError(e))?;
+        Ok(())
     }
 
     /// Publish filtered sensor data
@@ -62,7 +63,8 @@ impl MqttPublisher {
 
         self.mqtt_handler
             .publish(&topic, &serde_json::to_string(&payload).unwrap())
-            .map_err(|e| MqttError::PublishError(e).into())
+            .map_err(|e| MqttError::PublishError(e))?;
+        Ok(())
     }
 
     /// Publish derived data (calculations from sensor data)
@@ -83,7 +85,7 @@ impl MqttPublisher {
         if !derived.is_empty() {
             self.mqtt_handler
                 .publish(&topic, &serde_json::to_string(&derived).unwrap())
-                .map_err(|e| MqttError::PublishError(e).into())?;
+                .map_err(|e| MqttError::PublishError(e))?;
         }
 
         Ok(())
@@ -105,7 +107,8 @@ impl Publisher for MqttPublisher {
     fn reconnect(&self) -> Result<()> {
         self.mqtt_handler
             .reconnect()
-            .map_err(|e| MqttError::ConnectionError(e).into())
+            .map_err(|e| MqttError::ConnectionError(e))?;
+        Ok(())
     }
 }
 

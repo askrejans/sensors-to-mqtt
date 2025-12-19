@@ -174,18 +174,13 @@ impl MPU6500 {
         ])
     }
 
-    fn calculate_angles(&self, values: &[(String, f64)]) -> Option<(f64, f64)> {
-        // Use the filtered “raw” values for angle calculations
-        let mut accel = [0.0; 3];
-        for (key, value) in values {
-            // We expect keys: "accel_raw_0", "accel_raw_1", "accel_raw_2"
-            match key.as_str() {
-                "accel_raw_0" => accel[0] = *value,
-                "accel_raw_1" => accel[1] = *value,
-                "accel_raw_2" => accel[2] = *value,
-                _ => {}
-            }
-        }
+    fn calculate_angles(&self, values: &HashMap<String, f64>) -> Option<(f64, f64)> {
+        // Use the filtered "raw" values for angle calculations
+        let accel_x = values.get("accel_raw_x").copied().unwrap_or(0.0);
+        let accel_y = values.get("accel_raw_y").copied().unwrap_or(0.0);
+        let accel_z = values.get("accel_raw_z").copied().unwrap_or(0.0);
+        
+        let accel = [accel_x, accel_y, accel_z];
 
         // If we didn’t find the raw accelerations, bail out
         if accel == [0.0, 0.0, 0.0] {
