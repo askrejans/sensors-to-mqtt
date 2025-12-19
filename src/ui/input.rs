@@ -24,6 +24,8 @@ pub enum InputAction {
     ClearCharts,
     /// Toggle help panel
     ToggleHelp,
+    /// Calibrate selected sensor
+    Calibrate,
     /// No action
     None,
 }
@@ -65,6 +67,9 @@ fn map_key_to_action(key_event: KeyEvent) -> InputAction {
 
         // Clear charts
         KeyCode::Char('c') | KeyCode::Char('C') => InputAction::ClearCharts,
+
+        // Calibrate
+        KeyCode::Char('b') | KeyCode::Char('B') => InputAction::Calibrate,
 
         // Help
         KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') | KeyCode::F(1) => {

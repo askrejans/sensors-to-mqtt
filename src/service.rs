@@ -150,6 +150,20 @@ impl SensorService {
         self.should_stop.store(true, Ordering::SeqCst);
     }
 
+    /// Recalibrate a specific sensor
+    pub fn recalibrate_sensor(&mut self, sensor_name: &str) -> Result<()> {
+        if let Some(sensor) = self.get_sensor_mut(sensor_name) {
+            sensor.recalibrate()?;
+            log::info!("Recalibrated sensor: {}", sensor_name);
+            Ok(())
+        } else {
+            Err(crate::error::SensorError::ReadError(format!(
+                "Sensor {} not found",
+                sensor_name
+            )).into())
+        }
+    }
+
     /// Run the service in daemon mode
     pub fn run_daemon(&mut self) -> Result<()> {
         log::info!("Starting sensor service in daemon mode");

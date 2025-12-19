@@ -46,6 +46,11 @@ pub trait Sensor: Send {
     fn is_enabled(&self) -> bool;
     fn set_enabled(&mut self, enabled: bool);
     fn display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)>;
+    
+    /// Recalibrate the sensor (optional, default does nothing)
+    fn recalibrate(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Struct representing sensor data.

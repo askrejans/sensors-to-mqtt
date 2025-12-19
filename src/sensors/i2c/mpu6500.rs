@@ -90,8 +90,11 @@ impl MPU6500 {
                 .with_dead_zone(accel_cfg.dead_zone),
             KalmanFilter1D::new(accel_cfg.process_noise, accel_cfg.measurement_noise)
                 .with_dead_zone(accel_cfg.dead_zone),
-            KalmanFilter1D::new(accel_z_cfg.process_noise, accel_z_cfg.measurement_noise)
-                .with_dead_zone(accel_z_cfg.dead_zone),
+            // Use tighter filtering for Z-axis to reduce jitter
+            KalmanFilter1D::new(
+                accel_z_cfg.process_noise * 0.5,
+                accel_z_cfg.measurement_noise * 0.7
+            ).with_dead_zone(accel_z_cfg.dead_zone * 0.5),
         ];
 
         let gyro_filters = [
@@ -129,7 +132,7 @@ impl MPU6500 {
         Ok(i16::from_be_bytes(buf))
     }
 
-    fn calibrate(&mut self) -> Result<()> {
+    pub fn calibrate(&mut self) -> Result<()> {
         log::info!("Calibrating {} ... Keep sensor still", self.name);
 
         let mut accel_sums = [0i32; 3];
@@ -374,5 +377,20 @@ impl Sensor for MPU6500 {
         }
 
         Ok((lines, Some(output)))
+    }
+
+    fn recalibrate(&mut self) -> Result<()> {
+        // Reset filters before recalibration
+        for filter in &mut self.accel_filters {
+            filter.reset();
+        }
+        for filter in &mut self.gyro_filters {
+            filter.reset();
+        }
+        
+        // Recalibrate
+        self.calibrate()?;
+        log::info!("Sensor {} recalibrated", self.name);
+        Ok(())
     }
 }

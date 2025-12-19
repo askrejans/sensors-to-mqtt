@@ -52,6 +52,10 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
             Span::styled("  c", Style::default().fg(Color::Cyan)),
             Span::raw("       - Clear chart history"),
         ]),
+        Line::from(vec![
+            Span::styled("  b", Style::default().fg(Color::Cyan)),
+            Span::raw("       - Calibrate selected sensor (keep still!)"),
+        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("Other", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),

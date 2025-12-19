@@ -145,6 +145,16 @@ fn run_ui_loop(
             InputAction::ToggleHelp => {
                 app.toggle_help();
             }
+            InputAction::Calibrate => {
+                if let Some(name) = app.get_selected_sensor_name() {
+                    app.set_status(format!("Calibrating {} - Keep sensor still!", name));
+                    if let Err(e) = service.recalibrate_sensor(name) {
+                        app.set_error(format!("Calibration failed: {}", e));
+                    } else {
+                        app.set_status(format!("Calibration complete for {}", name));
+                    }
+                }
+            }
             InputAction::None => {}
         }
 

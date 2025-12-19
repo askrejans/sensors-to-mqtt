@@ -98,6 +98,7 @@ sensors:
 - `Space` - Toggle measuring
 - `↑`/`↓` - Select sensor
 - `d` - Toggle sensor on/off
+- `b` - Calibrate sensor (keep still!)
 - `c` - Clear charts
 - `r` - Reload config
 - `?` - Show help
