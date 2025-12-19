@@ -5,6 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     symbols,
+    text::Line,
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType},
     Frame,
 };
@@ -91,9 +92,9 @@ pub fn render_chart(frame: &mut Frame, area: Rect, history: Option<&SensorHistor
                     .style(Style::default().fg(Color::Gray))
                     .bounds([y_min, y_max])
                     .labels(vec![
-                        format!("{:.1}", y_min).into(),
-                        "0.0".into(),
-                        format!("{:.1}", y_max).into(),
+                        Line::from(format!("{:.1}", y_min)),
+                        Line::from("0.0"),
+                        Line::from(format!("{:.1}", y_max)),
                     ])
             );
 
