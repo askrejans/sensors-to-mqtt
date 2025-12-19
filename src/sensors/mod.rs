@@ -1,33 +1,18 @@
 use anyhow::Result;
 use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 pub mod i2c;
-use i2c::mpu6500::MPU6500;
 
 /// Configuration for sensors and MQTT settings.
 ///
 /// # Fields
 ///
 /// * `sensors` - A vector containing the types of sensors to be used.
-/// * `mqtt` - Configuration settings for MQTT.
 #[derive(Debug, Deserialize)]
 pub struct SensorConfig {
     pub sensors: Vec<SensorType>,
-    pub mqtt: MqttConfig,
-}
-
-/// Configuration for connecting to an MQTT broker.
-///
-/// # Fields
-///
-/// * `host` - The hostname or IP address of the MQTT broker.
-/// * `port` - The port number on which the MQTT broker is listening.
-/// * `base_topic` - The base topic to be used for MQTT messages.
-#[derive(Debug, Deserialize, Clone)]
-pub struct MqttConfig {
-    pub host: String,
-    pub port: u16,
-    pub base_topic: String,
 }
 
 /// Enum representing different types of sensors.
@@ -49,16 +34,18 @@ pub enum SensorType {
 /// * `init` - Initializes the sensor.
 /// * `read` - Reads data from the sensor.
 /// * `get_info` - Retrieves information about the sensor.
-/// * `display_data` - Displays the sensor data.
-pub trait Sensor {
+/// * `get_name` - Returns the name of the sensor.
+/// * `is_enabled` - Check if sensor is enabled.
+/// * `set_enabled` - Enable or disable the sensor.
+/// * `display_data` - Formats the sensor data for display.
+pub trait Sensor: Send {
     fn init(&mut self) -> Result<()>;
     fn read(&mut self) -> Result<SensorData>;
     fn get_info(&self) -> Result<String>;
+    fn get_name(&self) -> &str;
+    fn is_enabled(&self) -> bool;
+    fn set_enabled(&mut self, enabled: bool);
     fn display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)>;
-
-    fn as_mpu6500(&self) -> Option<&MPU6500> {
-        None
-    }
 }
 
 /// Struct representing sensor data.
@@ -66,13 +53,9 @@ pub trait Sensor {
 /// # Fields
 ///
 /// * `timestamp` - The timestamp of the data.
-/// * `device_name` - The name of the device.
-/// * `sample_rate` - The sample rate of the data.
-/// * `values` - A vector of key-value pairs representing the sensor values.
+/// * `data` - A HashMap of key-value pairs representing the sensor values.
 #[derive(Debug, Clone)]
 pub struct SensorData {
-    pub timestamp: i64,
-    pub device_name: String,
-    pub sample_rate: u16,
-    pub values: Vec<(String, f64)>,
+    pub timestamp: DateTime<Utc>,
+    pub data: HashMap<String, f64>,
 }

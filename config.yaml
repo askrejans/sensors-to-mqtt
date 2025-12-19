@@ -1,3 +1,47 @@
+# Sensors-to-MQTT Configuration
+
+# Service configuration
+service:
+  # Run mode: interactive or daemon
+  run_mode: interactive
+  # Update interval in milliseconds
+  update_interval_ms: 10
+  # Enable automatic reconnection
+  auto_reconnect: true
+  # Maximum reconnection attempts (0 = infinite)
+  max_reconnect_attempts: 0
+  # Initial reconnection delay in milliseconds
+  reconnect_delay_ms: 1000
+  # Maximum reconnection delay in milliseconds
+  max_reconnect_delay_ms: 60000
+
+# Logging configuration
+logging:
+  # Log level: trace, debug, info, warn, error
+  level: info
+  # Log to file (daemon mode only)
+  file: /var/log/sensors-to-mqtt.log
+  # Enable colored output (interactive mode only)
+  colored: true
+
+# MQTT broker configuration
+mqtt:
+  host: "localhost"
+  port: 1883
+  base_topic: "/GOLF86/SENSORS"
+  # Client ID (auto-generated if not specified)
+  client_id: "sensors-to-mqtt"
+  # Keep-alive interval in seconds
+  keep_alive_secs: 20
+  # Clean session on connect
+  clean_session: true
+  # Quality of Service (0, 1, or 2)
+  qos: 1
+  # Optional authentication
+  # username: "mqtt_user"
+  # password: "mqtt_password"
+
+# Sensor configuration
 sensors:
   - type: i2c
     bus: /dev/i2c-1
@@ -5,12 +49,24 @@ sensors:
       - name: mpu6500_1
         address: 0x68
         driver: mpu6500
+        # Enable this sensor on startup
+        enabled: true
         settings:
-          accel_range: 16    # ±16g
-          gyro_range: 2000   # ±2000°/s
+          accel_range: 16    # ±16g (2, 4, 8, or 16)
+          gyro_range: 2000   # ±2000°/s (250, 500, 1000, or 2000)
           sample_rate: 100   # Hz
-          samples_avg: 10    # Moving average samples
-mqtt:
-  host: "localhost"
-  port: 1883
-  base_topic: "/GOLF86/SENSORS"
+          # Kalman filter configuration for accelerometer
+          accel_filter:
+            process_noise: 0.00001
+            measurement_noise: 0.05
+            dead_zone: 0.005
+          # Kalman filter for Z-axis accelerometer (gravity)
+          accel_z_filter:
+            process_noise: 0.000005
+            measurement_noise: 0.08
+            dead_zone: 0.008
+          # Kalman filter configuration for gyroscope
+          gyro_filter:
+            process_noise: 0.00005
+            measurement_noise: 0.025
+            dead_zone: 0.1

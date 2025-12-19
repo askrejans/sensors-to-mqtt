@@ -1,6 +1,5 @@
 use crate::config::AppConfig;
 use paho_mqtt as mqtt;
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,28 +14,61 @@ impl MqttHandler {
         let client = setup_mqtt(&config)?;
         Ok(Self { client, config })
     }
-    /// Publishes data to an MQTT topic with the configured base topic prefix
-    pub fn publish_data(&self, subtopic: &str, data: &Value) -> Result<(), String> {
-        let full_topic = format!("{}/{}", self.config.mqtt_base_topic, subtopic);
-        self.publish_json(&full_topic, data)
-    }
 
-    /// Helper function to publish JSON data to a topic
-    fn publish_json(&self, topic: &str, data: &Value) -> Result<(), String> {
-        let msg = mqtt::Message::new(topic, data.to_string(), 1);
+    /// Publishes a message to an MQTT topic
+    pub fn publish(&self, topic: &str, payload: &str) -> Result<(), String> {
+        let qos = self.config.mqtt.qos;
+        let msg = mqtt::Message::new(topic, payload, qos);
         self.client
             .publish(msg)
             .map_err(|e| format!("Failed to publish to {}: {}", topic, e))
+    }
+
+    /// Check if the MQTT client is connected
+    pub fn is_connected(&self) -> bool {
+        self.client.is_connected()
+    }
+
+    /// Attempt to reconnect to the MQTT broker
+    pub fn reconnect(&self) -> Result<(), String> {
+        if self.is_connected() {
+            return Ok(());
+        }
+
+        log::info!("Attempting to reconnect to MQTT broker...");
+        
+        let conn_opts = mqtt::ConnectOptionsBuilder::new()
+            .keep_alive_interval(Duration::from_secs(self.config.mqtt.keep_alive_secs))
+            .clean_session(self.config.mqtt.clean_session)
+            .finalize();
+
+        self.client
+            .reconnect(conn_opts)
+            .map_err(|e| format!("Failed to reconnect to MQTT broker: {}", e))?;
+
+        log::info!("Reconnected to MQTT broker");
+        Ok(())
+    }
+
+    /// Disconnect from the MQTT broker
+    pub fn disconnect(&self) -> Result<(), String> {
+        if self.client.is_connected() {
+            log::info!("Disconnecting from MQTT broker");
+            self.client
+                .disconnect(None)
+                .map_err(|e| format!("Failed to disconnect: {}", e))?;
+        }
+        Ok(())
     }
 }
 
 /// Sets up and returns an MQTT client
 fn setup_mqtt(config: &Arc<AppConfig>) -> Result<mqtt::Client, String> {
     // Create client options
-    let host = format!("mqtt://{}:{}", config.mqtt_host, config.mqtt_port);
+    let host = format!("mqtt://{}:{}", config.mqtt.host, config.mqtt.port);
     let create_opts = mqtt::CreateOptionsBuilder::new()
         .server_uri(&host)
-        .client_id("sensors-to-mqtt")
+        .client_id(&config.mqtt.client_id)
         .finalize();
 
     // Create the client
@@ -44,19 +76,26 @@ fn setup_mqtt(config: &Arc<AppConfig>) -> Result<mqtt::Client, String> {
         .map_err(|e| format!("Failed to create MQTT client: {}", e))?;
 
     // Create connection options
-    let conn_opts = mqtt::ConnectOptionsBuilder::new()
-        .keep_alive_interval(Duration::from_secs(20))
-        .clean_session(true)
-        .finalize();
+    let mut conn_opts_builder = mqtt::ConnectOptionsBuilder::new();
+    conn_opts_builder
+        .keep_alive_interval(Duration::from_secs(config.mqtt.keep_alive_secs))
+        .clean_session(config.mqtt.clean_session);
+
+    // Add authentication if provided
+    if let (Some(username), Some(password)) = (&config.mqtt.username, &config.mqtt.password) {
+        conn_opts_builder.user_name(username).password(password);
+    }
+
+    let conn_opts = conn_opts_builder.finalize();
 
     // Connect to the broker
     client
         .connect(conn_opts)
         .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
 
-    println!(
+    log::info!(
         "Connected to MQTT broker at {}:{}",
-        config.mqtt_host, config.mqtt_port
+        config.mqtt.host, config.mqtt.port
     );
     Ok(client)
 }
@@ -64,40 +103,33 @@ fn setup_mqtt(config: &Arc<AppConfig>) -> Result<mqtt::Client, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::config::{MqttConfig, ServiceConfig, LoggingConfig};
 
     #[test]
-    fn test_mqtt_handler() {
-        // Create test configuration
+    fn test_mqtt_publish() {
+        // Note: This test requires a running MQTT broker
+        // Skip in CI or when broker is not available
         let config = Arc::new(AppConfig {
-            mqtt_host: String::from("localhost"),
-            mqtt_port: 1883,
-            mqtt_base_topic: String::from("test"),
-            ..Default::default()
+            service: ServiceConfig::default(),
+            logging: LoggingConfig::default(),
+            mqtt: MqttConfig {
+                host: "localhost".to_string(),
+                port: 1883,
+                base_topic: "/test".to_string(),
+                client_id: "test-client".to_string(),
+                keep_alive_secs: 20,
+                clean_session: true,
+                qos: 1,
+                username: None,
+                password: None,
+            },
         });
 
-        // Use mutex for test synchronization
-        let mutex = Mutex::new(());
-        let _guard = mutex.lock().unwrap();
-
-        // Create handler
-        let handler = MqttHandler::new(config.clone());
-        assert!(handler.is_ok(), "Failed to create MQTT handler");
-
-        // Create test data
-        let test_data = SensorData {
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            values: vec![
-                ("accel_x".to_string(), 1.0),
-                ("accel_y".to_string(), 2.0),
-                ("accel_z".to_string(), 3.0),
-            ],
-        };
-
-        // Test publishing
-        if let Ok(handler) = handler {
-            let result = handler.publish_sensor_data(&test_data);
-            assert!(result.is_ok(), "Failed to publish test data");
+        // Only run if we can connect
+        if let Ok(handler) = MqttHandler::new(config) {
+            assert!(handler.is_connected());
+            let result = handler.publish("/test/topic", "test message");
+            assert!(result.is_ok());
         }
     }
 }

@@ -8,8 +8,8 @@ pub struct KalmanFilter1D {
     x: f64,
     k: f64,
     initialized: bool,
-    dead_zone: f64,   // New: dead zone threshold
-    last_output: f64, // New: track last output for dead zone comparison
+    dead_zone: f64,
+    last_output: f64,
 }
 
 impl KalmanFilter1D {
@@ -21,7 +21,7 @@ impl KalmanFilter1D {
             x: 0.0,
             k: 0.0,
             initialized: false,
-            dead_zone: 0.01, // Default 0.01 units dead zone
+            dead_zone: 0.01,
             last_output: 0.0,
         }
     }
@@ -67,6 +67,20 @@ impl KalmanFilter1D {
 
         self.last_output = output;
         output
+    }
+
+    /// Reset the filter to initial state
+    pub fn reset(&mut self) {
+        self.x = 0.0;
+        self.p = self.r;
+        self.k = 0.0;
+        self.initialized = false;
+        self.last_output = 0.0;
+    }
+
+    /// Get the current state estimate
+    pub fn get_estimate(&self) -> f64 {
+        self.x
     }
 }
 

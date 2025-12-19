@@ -1,259 +1,286 @@
-/// Main entry point for the Sensors-to-MQTT system.
-///
-/// This function performs the following steps:
-/// 1. Loads the sensor configuration from a YAML file.
-/// 2. Initializes the MQTT handler with the loaded configuration.
-/// 3. Initializes the sensor buses based on the configuration.
-/// 4. Clears the terminal screen and displays initial sensor information.
-/// 5. Enters an infinite loop where it periodically reads sensor data, displays it, and publishes it to the MQTT broker.
-///
-/// # Returns
-///
-/// * `Result<()>` - Returns `Ok(())` if the program runs successfully, or an error if any step fails.
-///
-/// # Errors
-///
-/// This function will return an error if:
-/// * The configuration file cannot be read or parsed.
-/// * The MQTT handler cannot be initialized.
-/// * Any sensor bus cannot be initialized.
-/// * Sensor data cannot be read or published to the MQTT broker.
-use std::{
-    fs,
-    io::{self, Write},
-    sync::Arc,
-    thread,
-    time::Duration,
-};
-
-use crossterm::{
-    cursor, event,
-    style::{Color, Print, SetForegroundColor},
-    terminal, ExecutableCommand, QueueableCommand,
-};
+//! Main entry point for the Sensors-to-MQTT system.
+//!
+//! This application reads sensor data (IMU, accelerometers, etc.) and publishes
+//! it to an MQTT broker. It supports both interactive mode with a terminal UI
+//! and daemon mode for running as a background service.
 
 use anyhow::Result;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    Terminal,
+};
+use std::io;
+use std::sync::Arc;
+use std::time::Duration;
 
+mod cli;
 mod config;
+mod error;
 mod filters;
 mod mqtt_handler;
+mod publisher;
 mod sensors;
+mod service;
+mod ui;
 
+use cli::{Cli, RunMode};
 use config::AppConfig;
-use mqtt_handler::MqttHandler;
-use sensors::{SensorConfig, SensorType};
+use service::{SensorService, setup_signal_handler};
+use ui::{App, InputAction, handle_input};
 
-struct ScreenWriter {
-    stdout: io::Stdout,
-    width: u16,
-    height: u16,
-}
+fn main() -> Result<()> {
+    // Parse CLI arguments
+    let cli = Cli::parse_args();
 
-impl ScreenWriter {
-    fn new() -> Self {
-        let mut stdout = io::stdout();
-        stdout.execute(terminal::EnterAlternateScreen).unwrap();
-        stdout.execute(cursor::Hide).unwrap();
-        terminal::enable_raw_mode().unwrap();
+    // Initialize logger
+    let log_filter = cli.log_level.to_filter_string();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_filter))
+        .init();
 
-        let (width, height) = terminal::size().unwrap_or((80, 24));
+    log::info!("Starting Sensors-to-MQTT v{}", env!("CARGO_PKG_VERSION"));
 
-        Self {
-            stdout,
-            width,
-            height,
-        }
-    }
+    // Load configuration
+    let mut config = AppConfig::from_file(&cli.config)?;
+    config.apply_cli_overrides(&cli);
 
-    fn write_at(&mut self, x: u16, y: u16, text: &str, color: Option<Color>) -> io::Result<()> {
-        self.stdout.queue(cursor::MoveTo(x, y))?;
-        if let Some(color) = color {
-            self.stdout.queue(SetForegroundColor(color))?;
-        }
-        self.stdout.queue(Print(text))?;
-        Ok(())
-    }
+    log::info!("Configuration loaded from {:?}", cli.config);
+    log::debug!("Config: {:?}", config);
 
-    fn draw_box(&mut self, x: u16, y: u16, width: u16, height: u16) -> io::Result<()> {
-        // Draw top border
-        self.write_at(x, y, "┌", None)?;
-        self.write_at(x + width - 1, y, "┐", None)?;
+    let config = Arc::new(config);
 
-        // Draw sides
-        for dy in 1..height - 1 {
-            self.write_at(x, y + dy, "│", None)?;
-            self.write_at(x + width - 1, y + dy, "│", None)?;
-        }
-
-        // Draw bottom border
-        self.write_at(x, y + height - 1, "└", None)?;
-        self.write_at(x + width - 1, y + height - 1, "┘", None)?;
-
-        // Draw horizontal lines
-        for dx in 1..width - 1 {
-            self.write_at(x + dx, y, "─", None)?;
-            self.write_at(x + dx, y + height - 1, "─", None)?;
-        }
-
-        Ok(())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.stdout.flush()
+    // Run in appropriate mode
+    match cli.mode {
+        RunMode::Interactive => run_interactive(config, cli.no_mqtt),
+        RunMode::Daemon => run_daemon(config, cli.no_mqtt),
     }
 }
 
-impl Drop for ScreenWriter {
-    fn drop(&mut self) {
-        // Restore terminal state
-        let _ = terminal::disable_raw_mode();
-        let _ = self.stdout.execute(terminal::LeaveAlternateScreen);
-        let _ = self.stdout.execute(cursor::Show);
-    }
+/// Run in interactive mode with TUI
+fn run_interactive(config: Arc<AppConfig>, no_mqtt: bool) -> Result<()> {
+    log::info!("Running in interactive mode");
+
+    // Initialize service
+    let mut service = SensorService::new(config.clone(), no_mqtt)?;
+    let sensor_names = service.get_sensor_names();
+
+    // Setup signal handler
+    let stop_signal = service.get_stop_signal();
+    setup_signal_handler(stop_signal.clone())?;
+
+    // Initialize terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Initialize app state
+    let mut app = App::new(sensor_names);
+    app.mqtt_connected = service.is_publisher_connected();
+
+    // Main loop
+    let update_interval = Duration::from_millis(config.service.update_interval_ms);
+    let result = run_ui_loop(&mut terminal, &mut app, &mut service, update_interval);
+
+    // Cleanup terminal
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
 }
 
-fn display_startup_info(
-    screen: &mut ScreenWriter,
-    sensor_buses: &Vec<sensors::i2c::I2CBus>,
+/// Main UI loop
+fn run_ui_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    service: &mut SensorService,
+    update_interval: Duration,
 ) -> Result<()> {
-    // Header
-    screen.write_at(2, 1, "Sensors-to-MQTT System", Some(Color::Green))?;
-    screen.write_at(
-        screen.width - 20,
-        1,
-        "Press 'q' to exit",
-        Some(Color::Yellow),
-    )?;
-    screen.draw_box(0, 0, screen.width, screen.height)?;
+    loop {
+        // Draw UI
+        terminal.draw(|frame| {
+            render_ui(frame, app);
+        })?;
 
-    // Sensor panel (left side)
-    let panel_width = screen.width / 2;
-    screen.draw_box(1, 3, panel_width - 2, 10)?;
-    screen.write_at(3, 4, "🔍 Active Sensors", Some(Color::Blue))?;
-
-    let mut y = 5;
-    for (bus_idx, bus) in sensor_buses.iter().enumerate() {
-        screen.write_at(3, y, &format!("Bus #{}", bus_idx + 1), Some(Color::Yellow))?;
-        y += 1;
-
-        for device in &bus.devices {
-            if let Ok(info) = device.get_info() {
-                screen.write_at(5, y, &format!("✓ {}", info), Some(Color::White))?;
-                y += 1;
+        // Handle input
+        match handle_input(Duration::from_millis(10))? {
+            InputAction::Quit => {
+                app.should_quit = true;
             }
+            InputAction::ToggleMeasurement => {
+                app.toggle_measuring();
+            }
+            InputAction::Reload => {
+                if let Err(e) = service.reload_config() {
+                    app.set_error(format!("Reload failed: {}", e));
+                } else {
+                    app.set_status("Configuration reloaded".to_string());
+                }
+            }
+            InputAction::NextSensor => {
+                app.next_sensor();
+            }
+            InputAction::PrevSensor => {
+                app.prev_sensor();
+            }
+            InputAction::ToggleSensor => {
+                app.toggle_selected_sensor();
+                // Update sensor enabled state in service
+                if let Some(name) = app.get_selected_sensor_name() {
+                    let enabled = app.sensor_enabled.get(name).copied().unwrap_or(true);
+                    if let Some(sensor) = service.get_sensor_mut(name) {
+                        sensor.set_enabled(enabled);
+                    }
+                }
+            }
+            InputAction::ClearCharts => {
+                app.clear_charts();
+            }
+            InputAction::ToggleHelp => {
+                app.toggle_help();
+            }
+            InputAction::None => {}
         }
-        y += 1;
+
+        if app.should_quit {
+            service.request_stop();
+            break;
+        }
+
+        // Read and update sensor data if measuring
+        if app.is_measuring {
+            match service.read_sensors() {
+                Ok(sensor_data) => {
+                    for (name, data) in sensor_data {
+                        app.update_sensor_data(&name, data.clone());
+                        
+                        // Publish to MQTT
+                        if let Err(e) = service.publish(&name, &data) {
+                            app.set_error(format!("Publish error: {}", e));
+                        }
+                    }
+                    app.clear_error();
+                }
+                Err(e) => {
+                    app.set_error(format!("Sensor read error: {}", e));
+                }
+            }
+
+            // Update MQTT connection status
+            app.mqtt_connected = service.is_publisher_connected();
+        }
+
+        std::thread::sleep(update_interval);
     }
 
-    // Data panel (right side)
-    screen.draw_box(panel_width + 1, 3, panel_width - 2, screen.height - 4)?;
-    screen.write_at(panel_width + 3, 4, "📊 Sensor Data", Some(Color::Blue))?;
-
-    screen.flush()?;
     Ok(())
 }
 
-fn main() -> Result<()> {
-    // Load configs
-    let sensor_config: SensorConfig = serde_yaml_ng::from_str(&fs::read_to_string("config.yaml")?)?;
+/// Render the UI
+fn render_ui(frame: &mut ratatui::Frame, app: &App) {
+    let size = frame.area();
 
-    let app_config = Arc::new(AppConfig {
-        mqtt_host: sensor_config.mqtt.host.clone(),
-        mqtt_port: sensor_config.mqtt.port,
-        mqtt_base_topic: sensor_config.mqtt.base_topic.clone(),
-    });
+    // Create main layout
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),      // Main content
+            Constraint::Length(3),   // Status bar
+        ])
+        .split(size);
 
-    // Initialize MQTT handler
-    let mqtt_handler = MqttHandler::new(app_config.clone())
-        .map_err(|e| anyhow::anyhow!("Failed to create MQTT handler: {}", e))?;
+    let content_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25), // Sensor list
+            Constraint::Percentage(75), // Charts and data
+        ])
+        .split(main_chunks[0]);
 
-    // Initialize sensor buses
-    let mut sensor_buses = Vec::new();
-    for sensor_type in sensor_config.sensors {
-        match sensor_type {
-            SensorType::I2C(config) => {
-                let bus = sensors::i2c::I2CBus::new(config)?;
-                sensor_buses.push(bus);
-            }
-        }
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(50), // G-meter
+            Constraint::Percentage(50), // Chart
+        ])
+        .split(content_chunks[1]);
+
+    // Render sensor list
+    ui::widgets::render_sensor_list(
+        frame,
+        content_chunks[0],
+        &app.sensor_names,
+        &app.sensor_enabled,
+        app.selected_sensor,
+    );
+
+    // Render G-meter and chart for selected sensor
+    if let Some(sensor_name) = app.get_selected_sensor_name() {
+        let sensor_data = app.current_data.get(sensor_name);
+        let sensor_history = app.sensor_history.get(sensor_name);
+
+        ui::widgets::render_g_meter(frame, right_chunks[0], sensor_data, sensor_name);
+        ui::widgets::render_chart(frame, right_chunks[1], sensor_history, sensor_name);
     }
 
-    // Initialize screen writer
-    let mut screen = ScreenWriter::new();
+    // Render status bar
+    ui::widgets::render_status_bar(
+        frame,
+        main_chunks[1],
+        app.is_measuring,
+        app.mqtt_connected,
+        app.status_message.as_deref(),
+        app.error_message.as_deref(),
+    );
 
-    // Initial display
-    display_startup_info(&mut screen, &sensor_buses)?;
-    let panel_width = screen.width / 2;
-
-    loop {
-        // Check for 'q' key press
-        if event::poll(Duration::from_millis(10))? {
-            if let event::Event::Key(key_event) = event::read()? {
-                if key_event.code == event::KeyCode::Char('q') {
-                    break;
-                }
-            }
-        }
-
-        // Clear only the data panel area
-        for y in 6..screen.height - 1 {
-            screen.write_at(
-                panel_width + 3,
-                y,
-                &" ".repeat((panel_width - 5) as usize),
-                None,
-            )?;
-        }
-        let mut data_y = 6;
-
-        // Display and publish sensor readings
-        for bus in sensor_buses.iter_mut() {
-            for device in &mut bus.devices {
-                match device.read() {
-                    Ok(data) => {
-                        // Get display data from sensor
-                        if let Ok((_lines, Some(display_text))) = device.display_data(&data) {
-                            // Split the display text into lines and write each line
-                            for line in display_text.lines() {
-                                if data_y < screen.height - 1 {
-                                    screen.write_at(
-                                        panel_width + 3,
-                                        data_y,
-                                        line,
-                                        Some(Color::Cyan),
-                                    )?;
-                                    data_y += 1;
-                                }
-                            }
-                        }
-
-                        // Publish to MQTT
-                        if let Some(mpu6500) = device.as_mpu6500() {
-                            if let Err(e) = mpu6500.publish_mqtt(&mqtt_handler, &data) {
-                                screen.write_at(
-                                    panel_width + 3,
-                                    screen.height - 2,
-                                    &format!("MQTT error: {}", e),
-                                    Some(Color::Red),
-                                )?;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        screen.write_at(
-                            panel_width + 3,
-                            screen.height - 2,
-                            &format!("Sensor error: {}", e),
-                            Some(Color::Red),
-                        )?;
-                    }
-                }
-            }
-        }
-
-        screen.flush()?;
-        thread::sleep(Duration::from_millis(10));
+    // Render help overlay if needed
+    if app.show_help {
+        let help_area = centered_rect(60, 80, size);
+        ui::widgets::render_help(frame, help_area);
     }
+}
 
+/// Helper to create a centered rectangle
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+/// Run in daemon mode (no UI)
+fn run_daemon(config: Arc<AppConfig>, no_mqtt: bool) -> Result<()> {
+    log::info!("Running in daemon mode");
+
+    // Initialize service
+    let mut service = SensorService::new(config, no_mqtt)?;
+
+    // Setup signal handler
+    let stop_signal = service.get_stop_signal();
+    setup_signal_handler(stop_signal)?;
+
+    // Run the service
+    service.run_daemon()?;
+
+    log::info!("Daemon mode exited");
     Ok(())
 }

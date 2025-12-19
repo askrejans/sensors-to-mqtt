@@ -1,16 +1,25 @@
 [package]
 name = "sensors-to-mqtt"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-i2cdev = "0.6.1"
-linux-embedded-hal = "0.4.0"
+i2cdev = "0.6.2"
+linux-embedded-hal = "0.4.1"
 embedded-hal = "1.0.0"
-anyhow = "1.0"
-serde = { version = "1.0.217", features = ["derive"] }
+anyhow = "1.0.100"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
-serde_json = "1.0.138"
-chrono = "0.4.39"
-paho-mqtt = "0.12.5"
-crossterm = "0.28.1"
+serde_json = "1.0.145"
+chrono = "0.4.42"
+paho-mqtt = "0.13.3"
+crossterm = "0.29.0"
+ratatui = "0.29.0"
+log = "0.4.29"
+env_logger = "0.11"
+clap = { version = "4.5", features = ["derive"] }
+ctrlc = "3.4"
+thiserror = "2.0.17"
+
+[dev-dependencies]
+mockall = "0.14.0"

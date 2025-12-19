@@ -1,12 +1,13 @@
 use super::I2CDevice;
+use crate::config::FilterConfig;
 use crate::filters::kalman_1d::KalmanFilter1D;
-use crate::mqtt_handler::MqttHandler;
 use crate::sensors::{Sensor, SensorData};
 use anyhow::{Context, Result};
 use embedded_hal::i2c::I2c;
 use linux_embedded_hal::I2cdev;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use chrono::Utc;
+use std::collections::HashMap;
 
 const ACCEL_CONFIG: u8 = 0x1C;
 const GYRO_CONFIG: u8 = 0x1B;
@@ -17,21 +18,26 @@ const GYRO_XOUT_H: u8 = 0x43;
 const GYRO_YOUT_H: u8 = 0x45;
 const GYRO_ZOUT_H: u8 = 0x47;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct MPU6500Settings {
     pub accel_range: u16,
     pub gyro_range: u16,
     pub sample_rate: u16,
-    pub samples_avg: i32,
+    #[serde(default)]
+    pub accel_filter: FilterConfig,
+    #[serde(default)]
+    pub accel_z_filter: FilterConfig,
+    #[serde(default)]
+    pub gyro_filter: FilterConfig,
 }
 
 pub struct MPU6500 {
     i2c: I2cdev,
     address: u16,
     name: String,
+    enabled: bool,
     settings: MPU6500Settings,
     calibration: CalibrationData,
-    averages: AverageData,
     accel_filters: [KalmanFilter1D; 3],
     gyro_filters: [KalmanFilter1D; 3],
 }
@@ -39,11 +45,6 @@ pub struct MPU6500 {
 struct CalibrationData {
     accel_offsets: [i32; 3],
     gyro_offsets: [i32; 3],
-}
-
-struct AverageData {
-    accel: [i32; 3],
-    gyro: [i32; 3],
 }
 
 impl MPU6500 {
@@ -79,31 +80,38 @@ impl MPU6500 {
         let i2c = I2cdev::new(bus).context("Failed to open I2C device")?;
         let settings: MPU6500Settings = serde_yaml_ng::from_value(device.settings)?;
 
-        // Create Kalman filters with appropriate noise parameters
+        // Create Kalman filters using config parameters
+        let accel_cfg = &settings.accel_filter;
+        let accel_z_cfg = &settings.accel_z_filter;
+        let gyro_cfg = &settings.gyro_filter;
+
         let accel_filters = [
-            KalmanFilter1D::new(0.00001, 0.05).with_dead_zone(0.005), // Lateral (X)
-            KalmanFilter1D::new(0.00001, 0.05).with_dead_zone(0.005), // Forward (Y)
-            KalmanFilter1D::new(0.000005, 0.08).with_dead_zone(0.008), // Vertical (Z)
+            KalmanFilter1D::new(accel_cfg.process_noise, accel_cfg.measurement_noise)
+                .with_dead_zone(accel_cfg.dead_zone),
+            KalmanFilter1D::new(accel_cfg.process_noise, accel_cfg.measurement_noise)
+                .with_dead_zone(accel_cfg.dead_zone),
+            KalmanFilter1D::new(accel_z_cfg.process_noise, accel_z_cfg.measurement_noise)
+                .with_dead_zone(accel_z_cfg.dead_zone),
         ];
 
         let gyro_filters = [
-            KalmanFilter1D::new(0.00005, 0.025).with_dead_zone(0.1), // Roll rate
-            KalmanFilter1D::new(0.00005, 0.025).with_dead_zone(0.1), // Pitch rate
-            KalmanFilter1D::new(0.00005, 0.025).with_dead_zone(0.1), // Yaw rate
+            KalmanFilter1D::new(gyro_cfg.process_noise, gyro_cfg.measurement_noise)
+                .with_dead_zone(gyro_cfg.dead_zone),
+            KalmanFilter1D::new(gyro_cfg.process_noise, gyro_cfg.measurement_noise)
+                .with_dead_zone(gyro_cfg.dead_zone),
+            KalmanFilter1D::new(gyro_cfg.process_noise, gyro_cfg.measurement_noise)
+                .with_dead_zone(gyro_cfg.dead_zone),
         ];
 
         let mut sensor = Self {
             i2c,
             address: device.address,
-            name: device.name,
+            name: device.name.clone(),
+            enabled: device.enabled,
             settings,
             calibration: CalibrationData {
                 accel_offsets: [0; 3],
                 gyro_offsets: [0; 3],
-            },
-            averages: AverageData {
-                accel: [0; 3],
-                gyro: [0; 3],
             },
             accel_filters,
             gyro_filters,
@@ -122,7 +130,7 @@ impl MPU6500 {
     }
 
     fn calibrate(&mut self) -> Result<()> {
-        println!("Calibrating MPU6500... Keep still");
+        log::info!("Calibrating {} ... Keep sensor still", self.name);
 
         let mut accel_sums = [0i32; 3];
         let mut gyro_sums = [0i32; 3];
@@ -151,7 +159,7 @@ impl MPU6500 {
             _ => 2048,
         };
 
-        println!("Calibration complete!");
+        log::info!("Calibration complete for {}", self.name);
         Ok(())
     }
 
@@ -191,71 +199,9 @@ impl MPU6500 {
         let bank_angle = (accel[0] / accel[2].abs()).atan().to_degrees();
         Some((lean_angle, bank_angle))
     }
-
-    /// Publishes sensor data to MQTT topics
-    pub fn publish_mqtt(&self, mqtt: &MqttHandler, data: &SensorData) -> Result<(), String> {
-        let base_topic = format!("IMU/{}", self.name);
-
-        // 1. Publish sensor info with filter parameters
-        let info_json = json!({
-            "timestamp": data.timestamp,
-            "device": data.device_name,
-            "sample_rate": data.sample_rate,
-            "accel_range": self.settings.accel_range,
-            "gyro_range": self.settings.gyro_range,
-            "filter_info": {
-                "accel_process_noise": 0.0001,
-                "accel_measurement_noise": 0.0025,
-                "gyro_process_noise": 0.0001,
-                "gyro_measurement_noise": 0.003
-            }
-        });
-        mqtt.publish_data(&format!("{}/INFO", base_topic), &info_json)?;
-
-        // 2. Publish filtered sensor data
-        let mut filtered_values = serde_json::Map::new();
-        for (key, value) in &data.values {
-            filtered_values.insert(key.clone(), json!(value));
-        }
-        filtered_values.insert("timestamp".to_string(), json!(data.timestamp));
-        let filtered_json = Value::Object(filtered_values);
-        mqtt.publish_data(&format!("{}/FILTERED", base_topic), &filtered_json)?;
-
-        // 3. Calculate and publish derived data using filtered values
-        let angles = self.calculate_angles(&data.values);
-        let mut derived_data = serde_json::Map::new();
-
-        if let Some((lean, bank)) = angles {
-            derived_data.insert("lean_angle".to_string(), json!(lean));
-            derived_data.insert("bank_angle".to_string(), json!(bank));
-        }
-
-        // Map filtered sensor values to meaningful names
-        for (key, value) in &data.values {
-            match key.as_str() {
-                "accel_x" => derived_data.insert("lateral_g".to_string(), json!(value)),
-                "accel_y" => derived_data.insert("forward_g".to_string(), json!(value)),
-                "accel_z" => derived_data.insert("vertical_g".to_string(), json!(value)),
-                "gyro_x" => derived_data.insert("roll_rate".to_string(), json!(value)),
-                "gyro_y" => derived_data.insert("pitch_rate".to_string(), json!(value)),
-                "gyro_z" => derived_data.insert("yaw_rate".to_string(), json!(value)),
-                _ => None,
-            };
-        }
-
-        derived_data.insert("timestamp".to_string(), json!(data.timestamp));
-        let derived_json = Value::Object(derived_data);
-        mqtt.publish_data(&format!("{}/DERIVED", base_topic), &derived_json)?;
-
-        Ok(())
-    }
 }
 
 impl Sensor for MPU6500 {
-    fn as_mpu6500(&self) -> Option<&MPU6500> {
-        Some(self)
-    }
-
     fn init(&mut self) -> Result<()> {
         // Wake up the device
         self.i2c.write(self.address, &[0x6B, 0x00])?;
@@ -317,19 +263,30 @@ impl Sensor for MPU6500 {
         // Compute gravity-removed accelerations (for G-forces)
         let linear_accel = self.remove_gravity(raw_accel);
 
-        // Filter both raw and linear accelerations (store differently)
+        // Create separate filter instances for linear acceleration to avoid state corruption
+        let mut linear_filters = [
+            KalmanFilter1D::new(self.settings.accel_filter.process_noise, self.settings.accel_filter.measurement_noise)
+                .with_dead_zone(self.settings.accel_filter.dead_zone),
+            KalmanFilter1D::new(self.settings.accel_filter.process_noise, self.settings.accel_filter.measurement_noise)
+                .with_dead_zone(self.settings.accel_filter.dead_zone),
+            KalmanFilter1D::new(self.settings.accel_z_filter.process_noise, self.settings.accel_z_filter.measurement_noise)
+                .with_dead_zone(self.settings.accel_z_filter.dead_zone),
+        ];
+
+        let mut data = HashMap::new();
+        
         // 1) Filtered raw accelerations (used for angle calculations)
-        let mut filtered_raw_accel = [0.0; 3];
+        let axes = ["x", "y", "z"];
         for i in 0..3 {
-            filtered_raw_accel[i] = self.accel_filters[i].update(raw_accel[i]);
-            values.push((format!("accel_raw_{}", i), filtered_raw_accel[i]));
+            let filtered_raw = self.accel_filters[i].update(raw_accel[i]);
+            data.insert(format!("accel_raw_{}", axes[i]), filtered_raw);
         }
 
         // 2) Filtered linear accelerations (used for g-forces)
-        let mut filtered_linear_accel = [0.0; 3];
         for i in 0..3 {
-            filtered_linear_accel[i] = self.accel_filters[i].update(linear_accel[i]);
-            values.push((format!("accel_lin_{}", i), filtered_linear_accel[i]));
+            let filtered_linear = linear_filters[i].update(linear_accel[i]);
+            data.insert(format!("accel_{}", axes[i]), filtered_linear);
+            data.insert(format!("g_force_{}", axes[i]), filtered_linear);
         }
 
         // Filtered gyro data
@@ -337,16 +294,42 @@ impl Sensor for MPU6500 {
             let raw_gyro =
                 (raw[i + 3] as i32 - self.calibration.gyro_offsets[i]) as f64 / gyro_scale;
             let filtered_gyro = self.gyro_filters[i].update(raw_gyro);
-            values.push((format!("gyro_{}", i), filtered_gyro));
+            data.insert(format!("gyro_{}", axes[i]), filtered_gyro);
+            
+            // Add human-readable rate names
+            let rate_name = match i {
+                0 => "roll_rate",
+                1 => "pitch_rate",
+                2 => "yaw_rate",
+                _ => unreachable!(),
+            };
+            data.insert(rate_name.to_string(), filtered_gyro);
+        }
+
+        // Calculate and add angles
+        if let Some((lean, bank)) = self.calculate_angles(&data) {
+            data.insert("lean_angle".to_string(), lean);
+            data.insert("bank_angle".to_string(), bank);
         }
 
         // Return sensor data
         Ok(SensorData {
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            device_name: self.name.clone(),
-            sample_rate: self.settings.sample_rate,
-            values,
+            timestamp: Utc::now(),
+            data,
         })
+    }
+
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        log::info!("Sensor {} {}", self.name, if enabled { "enabled" } else { "disabled" });
     }
 
     fn get_info(&self) -> Result<String> {
@@ -359,14 +342,11 @@ impl Sensor for MPU6500 {
     fn display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)> {
         let mut lines = 0;
         let mut output = String::new();
-        let angles = self.calculate_angles(&data.values);
 
         output.push_str(&format!(
             "Device: {} @ {}\n",
             self.name,
-            chrono::DateTime::from_timestamp_millis(data.timestamp)
-                .unwrap()
-                .format("%H:%M:%S.%3f")
+            data.timestamp.format("%H:%M:%S.%3f")
         ));
         lines += 1;
 
@@ -374,29 +354,23 @@ impl Sensor for MPU6500 {
         output.push_str("──────────────────┼───────────────────\n");
         lines += 2;
 
-        let mut g_forces = Vec::new();
-        let mut turn_rates = Vec::new();
+        // Extract G-forces
+        let g_x = data.data.get("g_force_x").unwrap_or(&0.0);
+        let g_y = data.data.get("g_force_y").unwrap_or(&0.0);
+        let g_z = data.data.get("g_force_z").unwrap_or(&0.0);
 
-        for (key, value) in &data.values {
-            match key.as_str() {
-                "accel_lin_0" => g_forces.push(format!("Right:   {:6.3} G", value)),
-                "accel_lin_1" => g_forces.push(format!("Forward: {:6.3} G", value)),
-                "accel_lin_2" => g_forces.push(format!("Up:      {:6.3} G", value)),
-                "gyro_0" => turn_rates.push(format!("Roll:  {:6.2}°/s", value)),
-                "gyro_1" => turn_rates.push(format!("Pitch: {:6.2}°/s", value)),
-                "gyro_2" => turn_rates.push(format!("Yaw:   {:6.2}°/s", value)),
-                _ => {}
-            }
-        }
+        // Extract turn rates
+        let roll = data.data.get("roll_rate").unwrap_or(&0.0);
+        let pitch = data.data.get("pitch_rate").unwrap_or(&0.0);
+        let yaw = data.data.get("yaw_rate").unwrap_or(&0.0);
 
-        for i in 0..3 {
-            if i < g_forces.len() && i < turn_rates.len() {
-                output.push_str(&format!("{} │ {}\n", g_forces[i], turn_rates[i]));
-                lines += 1;
-            }
-        }
+        output.push_str(&format!("Lateral:  {:6.3} G │ Roll:  {:6.2}°/s\n", g_x, roll));
+        output.push_str(&format!("Forward:  {:6.3} G │ Pitch: {:6.2}°/s\n", g_y, pitch));
+        output.push_str(&format!("Vertical: {:6.3} G │ Yaw:   {:6.2}°/s\n", g_z, yaw));
+        lines += 3;
 
-        if let Some((lean, bank)) = angles {
+        // Display angles if available
+        if let (Some(lean), Some(bank)) = (data.data.get("lean_angle"), data.data.get("bank_angle")) {
             output.push_str("──────────────────┴───────────────────\n");
             output.push_str(&format!(
                 "Lean Angle: {:6.2}°  Bank Angle: {:6.2}°\n",

@@ -14,7 +14,13 @@ pub struct I2CDevice {
     pub name: String,
     pub address: u16,
     pub driver: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     pub settings: serde_yaml_ng::Value,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 pub struct I2CBus {
@@ -31,7 +37,9 @@ impl I2CBus {
                     let sensor = mpu6500::MPU6500::new(&config.bus, device)?;
                     devices.push(Box::new(sensor) as Box<dyn super::Sensor>);
                 }
-                _ => println!("Unsupported I2C device: {}", device.driver),
+                _ => {
+                    log::warn!("Unsupported I2C device driver: {}", device.driver);
+                }
             }
         }
 
