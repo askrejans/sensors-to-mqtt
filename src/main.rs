@@ -147,8 +147,9 @@ fn run_ui_loop(
             }
             InputAction::Calibrate => {
                 if let Some(name) = app.get_selected_sensor_name() {
+                    let name = name.to_string();
                     app.set_status(format!("Calibrating {} - Keep sensor still!", name));
-                    if let Err(e) = service.recalibrate_sensor(name) {
+                    if let Err(e) = service.recalibrate_sensor(&name) {
                         app.set_error(format!("Calibration failed: {}", e));
                     } else {
                         app.set_status(format!("Calibration complete for {}", name));
