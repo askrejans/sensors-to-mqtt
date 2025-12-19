@@ -154,7 +154,7 @@ impl SensorService {
     pub fn recalibrate_sensor(&mut self, sensor_name: &str) -> Result<()> {
         if let Some(sensor) = self.get_sensor_mut(sensor_name) {
             sensor.recalibrate()?;
-            log::info!("Recalibrated sensor: {}", sensor_name);
+            // Recalibration message shown in UI status bar
             Ok(())
         } else {
             Err(crate::error::SensorError::ReadError(format!(

@@ -133,7 +133,7 @@ impl MPU6500 {
     }
 
     pub fn calibrate(&mut self) -> Result<()> {
-        log::info!("Calibrating {} ... Keep sensor still", self.name);
+        // Log message suppressed in interactive mode to avoid TUI interference
 
         let mut accel_sums = [0i32; 3];
         let mut gyro_sums = [0i32; 3];
@@ -162,7 +162,7 @@ impl MPU6500 {
             _ => 2048,
         };
 
-        log::info!("Calibration complete for {}", self.name);
+        // Calibration complete (message shown in UI status bar)
         Ok(())
     }
 
@@ -326,7 +326,7 @@ impl Sensor for MPU6500 {
 
     fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-        log::info!("Sensor {} {}", self.name, if enabled { "enabled" } else { "disabled" });
+        // Status change shown in UI status bar
     }
 
     fn get_info(&self) -> Result<String> {
@@ -390,7 +390,7 @@ impl Sensor for MPU6500 {
         
         // Recalibrate
         self.calibrate()?;
-        log::info!("Sensor {} recalibrated", self.name);
+        // Recalibration message shown in UI status bar
         Ok(())
     }
 }

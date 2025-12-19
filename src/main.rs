@@ -37,10 +37,19 @@ fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
 
-    // Initialize logger
+    // Initialize logger - in interactive mode, only log to file or suppress console output
     let log_filter = cli.log_level.to_filter_string();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_filter))
-        .init();
+    if cli.mode == RunMode::Interactive {
+        // In interactive mode, suppress console logging to avoid interfering with TUI
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_filter))
+            .target(env_logger::Target::Pipe(Box::new(std::io::sink())))
+            .init();
+    } else {
+        // In daemon mode, log to console/journal normally
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_filter))
+            .init();
+        log::info!("Starting Sensors-to-MQTT v{}", env!("CARGO_PKG_VERSION"));
+    }
 
     log::info!("Starting Sensors-to-MQTT v{}", env!("CARGO_PKG_VERSION"));
 
@@ -136,6 +145,7 @@ fn run_ui_loop(
                     let enabled = app.sensor_enabled.get(name).copied().unwrap_or(true);
                     if let Some(sensor) = service.get_sensor_mut(name) {
                         sensor.set_enabled(enabled);
+                        app.set_status(format!("Sensor {} {}", name, if enabled { "enabled" } else { "disabled" }));
                     }
                 }
             }
