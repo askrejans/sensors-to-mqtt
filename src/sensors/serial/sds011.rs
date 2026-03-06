@@ -252,7 +252,8 @@ mod tests {
 
     #[test]
     fn test_aqi_pm2_5_moderate() {
-        assert!((aqi_pm2_5(20.0) - 68.75).abs() < 0.1);
+        // (49 / 23.3) * 7.9 + 51 ≈ 67.61
+        assert!((aqi_pm2_5(20.0) - 67.61).abs() < 0.1);
     }
 
     #[test]
