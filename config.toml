@@ -1,0 +1,168 @@
+# sensors-to-mqtt — config.toml
+# Priority (highest → lowest):
+#   SENSORS_TO_MQTT__* env vars  >  this file  >  built-in defaults
+#
+# Multiple sensors are supported. Each [[sensors]] block defines one device.
+# Supported connection types: i2c | gpio
+# Supported drivers:  mpu6500 | bmp280 | bme280 | sht31 | bh1750 | ina219 | ads1115 | gpio_button | synthetic
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log_level = "info"   # trace | debug | info | warn | error
+log_json  = false    # true = JSON structured output (useful for systemd)
+
+# ---------------------------------------------------------------------------
+# TUI
+# ---------------------------------------------------------------------------
+tui_refresh_rate_ms = 100
+
+# ---------------------------------------------------------------------------
+# MQTT
+# ---------------------------------------------------------------------------
+[mqtt]
+enabled         = true
+host            = "localhost"
+port            = 1883
+base_topic      = "/SENSORS"
+client_id       = "sensors-to-mqtt"
+keep_alive_secs = 20
+# username = ""
+# password = ""
+
+# ---------------------------------------------------------------------------
+# Sensors  (add one [[sensors]] block per device)
+# ---------------------------------------------------------------------------
+
+# --- MPU-6500: 6-axis IMU (acceleration + gyroscope) ----------------------
+[[sensors]]
+name    = "imu1"
+driver  = "mpu6500"
+enabled = true
+
+[sensors.connection]
+type    = "i2c"
+device  = "/dev/i2c-1"
+address = 0x68
+
+[sensors.settings]
+history_size = 600
+
+# --- BME280: temperature + pressure + humidity ----------------------------
+# [[sensors]]
+# name    = "climate"
+# driver  = "bme280"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x76
+
+# --- BMP280: temperature + pressure ---------------------------------------
+# [[sensors]]
+# name    = "pressure"
+# driver  = "bmp280"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x77
+
+# --- SHT31: temperature + humidity ----------------------------------------
+# [[sensors]]
+# name    = "temp_humidity"
+# driver  = "sht31"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x44
+
+# --- BH1750: ambient light (lux) ------------------------------------------
+# [[sensors]]
+# name    = "light"
+# driver  = "bh1750"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x23   # 0x23 (ADDR=GND) or 0x5C (ADDR=VCC)
+
+# --- INA219: current / voltage / power monitor ----------------------------
+# [[sensors]]
+# name   = "battery"
+# driver = "ina219"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x40
+#
+# [sensors.settings]
+# shunt_ohms    = 0.1
+# max_current_a = 3.2
+# battery_min_v = 11.0
+# battery_max_v = 14.4
+
+# --- ADS1115: 4-channel 16-bit ADC (analog inputs) ------------------------
+# [[sensors]]
+# name   = "analog"
+# driver = "ads1115"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x48   # 0x48–0x4B depending on ADDR pin
+#
+# [sensors.settings]
+# gain        = "pga_4_096v"
+# sample_rate = "sps_128"
+#
+# [[sensors.settings.channels]]
+# index  = 0
+# label  = "Throttle"
+# unit   = "%"
+# scale  = 25.6
+# offset = 0.0
+#
+# [[sensors.settings.channels]]
+# index  = 1
+# label  = "Coolant Temp"
+# unit   = "C"
+# scale  = 100.0
+# offset = -1.0
+
+# --- GPIO button / switch -------------------------------------------------
+# [[sensors]]
+# name   = "brake_switch"
+# driver = "gpio_button"
+# enabled = true
+#
+# [sensors.connection]
+# type        = "gpio"
+# pin         = 17
+# active_low  = false
+# debounce_ms = 20
+
+# --- Synthetic test sensor (no hardware required) -------------------------
+# [[sensors]]
+# name    = "synthetic"
+# driver  = "synthetic"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x00
+#
+# [sensors.settings]
+# rate_hz = 50
+# speed   = 1.0
+# noise   = 0.02
+

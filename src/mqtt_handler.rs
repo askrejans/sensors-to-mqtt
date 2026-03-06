@@ -1,130 +1,117 @@
-use crate::config::AppConfig;
-use paho_mqtt as mqtt;
+//! Async MQTT handler using rumqttc.
+//!
+//! Runs the rumqttc event loop in a background Tokio task.
+//! Publishes are done via a bounded mpsc channel so callers never block.
+
+use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::RwLock;
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 
-pub struct MqttHandler {
-    client: mqtt::Client,
-    config: Arc<AppConfig>,
+use crate::config::MqttConfig;
+use crate::models::MqttStatus;
+
+// ---------------------------------------------------------------------------
+// Publish message
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct PublishMsg {
+    pub topic: String,
+    pub payload: String,
 }
 
-impl MqttHandler {
-    /// Creates a new MQTT handler with the given configuration
-    pub fn new(config: Arc<AppConfig>) -> Result<Self, String> {
-        let client = setup_mqtt(&config)?;
-        Ok(Self { client, config })
-    }
+// ---------------------------------------------------------------------------
+// Handle returned to callers
+// ---------------------------------------------------------------------------
 
-    /// Publishes a message to an MQTT topic
-    pub fn publish(&self, topic: &str, payload: &str) -> Result<(), String> {
-        let qos = self.config.mqtt.qos;
-        let msg = mqtt::Message::new(topic, payload, qos);
-        self.client
-            .publish(msg)
-            .map_err(|e| format!("Failed to publish to {}: {}", topic, e))
-    }
+#[derive(Clone)]
+pub struct MqttHandle {
+    tx: mpsc::Sender<PublishMsg>,
+    pub counter: Arc<AtomicU64>,
+    pub status: Arc<RwLock<MqttStatus>>,
+}
 
-    /// Check if the MQTT client is connected
-    pub fn is_connected(&self) -> bool {
-        self.client.is_connected()
-    }
-
-    /// Attempt to reconnect to the MQTT broker
-    pub fn reconnect(&self) -> Result<(), String> {
-        if self.is_connected() {
-            return Ok(());
+impl MqttHandle {
+    /// Queue a publish.  Returns immediately; drops message if channel is full.
+    pub async fn publish(&self, topic: impl Into<String>, payload: impl Into<String>) {
+        let msg = PublishMsg {
+            topic: topic.into(),
+            payload: payload.into(),
+        };
+        if self.tx.try_send(msg).is_ok() {
+            self.counter.fetch_add(1, Ordering::Relaxed);
         }
-
-        log::info!("Attempting to reconnect to MQTT broker...");
-
-        self.client
-            .reconnect()
-            .map_err(|e| format!("Failed to reconnect to MQTT broker: {}", e))?;
-
-        log::info!("Reconnected to MQTT broker");
-        Ok(())
     }
 
-    /// Disconnect from the MQTT broker
-    pub fn disconnect(&self) -> Result<(), String> {
-        if self.client.is_connected() {
-            log::info!("Disconnecting from MQTT broker");
-            self.client
-                .disconnect(None)
-                .map_err(|e| format!("Failed to disconnect: {}", e))?;
+    pub async fn is_connected(&self) -> bool {
+        self.status.read().await.is_connected()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Start the MQTT event-loop task.  Returns a handle usable from any task.
+// ---------------------------------------------------------------------------
+
+pub fn spawn_mqtt_task(cfg: &MqttConfig) -> MqttHandle {
+    let (tx, rx) = mpsc::channel::<PublishMsg>(1000);
+    let counter = Arc::new(AtomicU64::new(0));
+    let status = Arc::new(RwLock::new(MqttStatus::Connecting));
+
+    let handle = MqttHandle {
+        tx,
+        counter: Arc::clone(&counter),
+        status: Arc::clone(&status),
+    };
+
+    let mut opts = MqttOptions::new(cfg.client_id.clone(), cfg.host.clone(), cfg.port);
+    opts.set_keep_alive(std::time::Duration::from_secs(20));
+    opts.set_clean_session(true);
+
+    if let (Some(u), Some(p)) = (cfg.username.clone(), cfg.password.clone()) {
+        opts.set_credentials(u, p);
+    }
+
+    let qos = QoS::AtLeastOnce;
+
+    let (client, event_loop) = AsyncClient::new(opts, 100);
+
+    tokio::spawn(run_event_loop(event_loop, status.clone()));
+    tokio::spawn(run_publish_loop(client, rx, qos));
+
+    handle
+}
+
+async fn run_event_loop(mut evl: EventLoop, status: Arc<RwLock<MqttStatus>>) {
+    loop {
+        match evl.poll().await {
+            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
+                info!("MQTT connected");
+                *status.write().await = MqttStatus::Connected;
+            }
+            Ok(Event::Incoming(Incoming::Disconnect)) => {
+                warn!("MQTT disconnected");
+                *status.write().await = MqttStatus::Disconnected;
+            }
+            Err(e) => {
+                error!("MQTT error: {}", e);
+                *status.write().await = MqttStatus::Error(e.to_string());
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            _ => {}
         }
-        Ok(())
     }
 }
 
-/// Sets up and returns an MQTT client
-fn setup_mqtt(config: &Arc<AppConfig>) -> Result<mqtt::Client, String> {
-    // Create client options
-    let host = format!("mqtt://{}:{}", config.mqtt.host, config.mqtt.port);
-    let create_opts = mqtt::CreateOptionsBuilder::new()
-        .server_uri(&host)
-        .client_id(&config.mqtt.client_id)
-        .finalize();
-
-    // Create the client
-    let client = mqtt::Client::new(create_opts)
-        .map_err(|e| format!("Failed to create MQTT client: {}", e))?;
-
-    // Create connection options
-    let mut conn_opts_builder = mqtt::ConnectOptionsBuilder::new();
-    conn_opts_builder
-        .keep_alive_interval(Duration::from_secs(config.mqtt.keep_alive_secs))
-        .clean_session(config.mqtt.clean_session);
-
-    // Add authentication if provided
-    if let (Some(username), Some(password)) = (&config.mqtt.username, &config.mqtt.password) {
-        conn_opts_builder.user_name(username).password(password);
-    }
-
-    let conn_opts = conn_opts_builder.finalize();
-
-    // Connect to the broker
-    client
-        .connect(conn_opts)
-        .map_err(|e| format!("Failed to connect to MQTT broker: {}", e))?;
-
-    log::info!(
-        "Connected to MQTT broker at {}:{}",
-        config.mqtt.host, config.mqtt.port
-    );
-    Ok(client)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{MqttConfig, ServiceConfig, LoggingConfig};
-
-    #[test]
-    fn test_mqtt_publish() {
-        // Note: This test requires a running MQTT broker
-        // Skip in CI or when broker is not available
-        let config = Arc::new(AppConfig {
-            service: ServiceConfig::default(),
-            logging: LoggingConfig::default(),
-            mqtt: MqttConfig {
-                host: "localhost".to_string(),
-                port: 1883,
-                base_topic: "/test".to_string(),
-                client_id: "test-client".to_string(),
-                keep_alive_secs: 20,
-                clean_session: true,
-                qos: 1,
-                username: None,
-                password: None,
-            },
-        });
-
-        // Only run if we can connect
-        if let Ok(handler) = MqttHandler::new(config) {
-            assert!(handler.is_connected());
-            let result = handler.publish("/test/topic", "test message");
-            assert!(result.is_ok());
+async fn run_publish_loop(client: AsyncClient, mut rx: mpsc::Receiver<PublishMsg>, qos: QoS) {
+    while let Some(msg) = rx.recv().await {
+        if let Err(e) = client
+            .publish(&msg.topic, qos, false, msg.payload.as_bytes())
+            .await
+        {
+            warn!("MQTT publish error on {}: {}", msg.topic, e);
         }
     }
 }

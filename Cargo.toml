@@ -1,25 +1,57 @@
 [package]
 name = "sensors-to-mqtt"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
-i2cdev = "0.6.2"
-linux-embedded-hal = "0.4.1"
-embedded-hal = "1.0.0"
-anyhow = "1.0.100"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_yaml_ng = "0.10.0"
-serde_json = "1.0.145"
-chrono = "0.4.42"
-paho-mqtt = "0.13.3"
-crossterm = "0.29.0"
-ratatui = "0.29.0"
-log = "0.4.29"
-env_logger = "0.11"
-clap = { version = "4.5", features = ["derive"] }
-ctrlc = "3.4"
-thiserror = "2.0.17"
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures-util = "0.3.32"
+
+# Async trait support
+async-trait = "0.1"
+
+# I2C (cross-platform trait only; Linux HAL is in target-specific section below)
+embedded-hal = "1.0"
+
+# Config loading
+config = "0.15"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9.8"
+
+# MQTT
+rumqttc = "0.25.1"
+
+# TUI
+ratatui = "0.30.0"
+crossterm = "0.29"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# CLI
+gumdrop = "0.8"
+atty = "0.2"
+
+# Signal handling
+signal-hook = "0.4.3"
+signal-hook-tokio = { version = "0.4.0", features = ["futures-v0_3"] }
+
+# Error handling
+anyhow = "1.0.102"
+thiserror = "2.0.18"
+
+# Serialisation / data
+serde_json = "1.0.149"
+chrono = { version = "0.4.44", features = ["serde"] }
+
+# I2C hardware drivers — Linux/Android only
+[target.'cfg(target_os = "linux")'.dependencies]
+i2cdev = "0.6"
+linux-embedded-hal = "0.4"
 
 [dev-dependencies]
-mockall = "0.14.0"
+mockall = "0.14"
+tempfile = "3"

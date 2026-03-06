@@ -1,48 +1,16 @@
-use anyhow::Result;
-use serde::Deserialize;
+//! I2C sensor drivers.
 
+#[cfg(target_os = "linux")]
+pub mod ads1115;
+#[cfg(target_os = "linux")]
+pub mod bh1750;
+#[cfg(target_os = "linux")]
+pub mod bme280;
+#[cfg(target_os = "linux")]
+pub mod bmp280;
+#[cfg(target_os = "linux")]
+pub mod ina219;
+#[cfg(target_os = "linux")]
 pub mod mpu6500;
-
-#[derive(Debug, Deserialize)]
-pub struct I2CConfig {
-    pub bus: String,
-    pub devices: Vec<I2CDevice>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct I2CDevice {
-    pub name: String,
-    pub address: u16,
-    pub driver: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    pub settings: serde_yaml_ng::Value,
-}
-
-fn default_enabled() -> bool {
-    true
-}
-
-pub struct I2CBus {
-    pub devices: Vec<Box<dyn super::Sensor>>,
-}
-
-impl I2CBus {
-    pub fn new(config: I2CConfig) -> Result<Self> {
-        let mut devices = Vec::new();
-
-        for device in config.devices {
-            match device.driver.as_str() {
-                "mpu6500" => {
-                    let sensor = mpu6500::MPU6500::new(&config.bus, device)?;
-                    devices.push(Box::new(sensor) as Box<dyn super::Sensor>);
-                }
-                _ => {
-                    log::warn!("Unsupported I2C device driver: {}", device.driver);
-                }
-            }
-        }
-
-        Ok(Self { devices })
-    }
-}
+#[cfg(target_os = "linux")]
+pub mod sht31;

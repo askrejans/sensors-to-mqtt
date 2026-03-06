@@ -1,28 +1,63 @@
-use super::I2CDevice;
-use crate::config::FilterConfig;
-use crate::filters::kalman_1d::KalmanFilter1D;
-use crate::sensors::{Sensor, SensorData};
+//! MPU6500 6-axis IMU driver (Linux only — requires linux-embedded-hal).
+//!
+//! Provides calibrated, Kalman-filtered accelerometer and gyroscope data.
+//! Extra derived quantities: combined_g, tilt_angle, angular_velocity_magnitude,
+//! and a rolling peak_g (cleared on recalibrate).
+
+#![cfg(target_os = "linux")]
+
 use anyhow::{Context, Result};
+use chrono::Utc;
 use embedded_hal::i2c::I2c;
 use linux_embedded_hal::I2cdev;
 use serde::Deserialize;
-use chrono::Utc;
 use std::collections::HashMap;
 
+use crate::config::{ConnectionConfig, I2cConnectionConfig, SensorConfig};
+use crate::filters::kalman_1d::KalmanFilter1D;
+use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+
+// ---------------------------------------------------------------------------
+// Register map
+// ---------------------------------------------------------------------------
+const PWR_MGMT_1: u8 = 0x6B;
+const SMPLRT_DIV: u8 = 0x19;
 const ACCEL_CONFIG: u8 = 0x1C;
 const GYRO_CONFIG: u8 = 0x1B;
 const ACCEL_XOUT_H: u8 = 0x3B;
-const ACCEL_YOUT_H: u8 = 0x3D;
-const ACCEL_ZOUT_H: u8 = 0x3F;
 const GYRO_XOUT_H: u8 = 0x43;
-const GYRO_YOUT_H: u8 = 0x45;
-const GYRO_ZOUT_H: u8 = 0x47;
+
+// ---------------------------------------------------------------------------
+// Settings (deserialised from config.toml [sensors.settings])
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FilterConfig {
+    pub process_noise: f64,
+    pub measurement_noise: f64,
+    pub dead_zone: f64,
+}
+
+impl Default for FilterConfig {
+    fn default() -> Self {
+        Self {
+            process_noise: 0.00001,
+            measurement_noise: 0.05,
+            dead_zone: 0.005,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct MPU6500Settings {
+    #[serde(default = "default_accel_range")]
     pub accel_range: u16,
+    #[serde(default = "default_gyro_range")]
     pub gyro_range: u16,
+    #[serde(default = "default_sample_rate")]
     pub sample_rate: u16,
+    #[serde(default = "default_history_size")]
+    pub history_size: usize,
     #[serde(default)]
     pub accel_filter: FilterConfig,
     #[serde(default)]
@@ -31,366 +66,467 @@ pub struct MPU6500Settings {
     pub gyro_filter: FilterConfig,
 }
 
-pub struct MPU6500 {
-    i2c: I2cdev,
-    address: u16,
-    name: String,
-    enabled: bool,
-    settings: MPU6500Settings,
-    calibration: CalibrationData,
-    accel_filters: [KalmanFilter1D; 3],
-    gyro_filters: [KalmanFilter1D; 3],
+fn default_accel_range() -> u16 {
+    16
+}
+fn default_gyro_range() -> u16 {
+    2000
+}
+fn default_sample_rate() -> u16 {
+    100
+}
+fn default_history_size() -> usize {
+    600
 }
 
+// ---------------------------------------------------------------------------
+// Calibration
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Clone)]
 struct CalibrationData {
     accel_offsets: [i32; 3],
     gyro_offsets: [i32; 3],
 }
 
-impl MPU6500 {
-    fn remove_gravity(&self, raw_accel: [f64; 3]) -> [f64; 3] {
-        // Estimate gravity components using complementary filter
-        let gravity_magnitude = 1.0; // 1G
-        let total_magnitude =
-            (raw_accel[0].powi(2) + raw_accel[1].powi(2) + raw_accel[2].powi(2)).sqrt();
+// ---------------------------------------------------------------------------
+// Driver
+// ---------------------------------------------------------------------------
 
-        // Scale factor to normalize gravity vector
-        let scale = if total_magnitude != 0.0 {
-            gravity_magnitude / total_magnitude
-        } else {
-            0.0
+pub struct MPU6500 {
+    i2c: I2cdev,
+    address: u8,
+    sensor_name: String,
+    enabled: bool,
+    settings: MPU6500Settings,
+    calibration: CalibrationData,
+    /// Stateful Kalman filters for raw accel (persistent across reads)
+    accel_filters: [KalmanFilter1D; 3],
+    /// Stateful Kalman filters for linear (gravity-removed) accel
+    linear_filters: [KalmanFilter1D; 3],
+    /// Stateful Kalman filters for gyroscope
+    gyro_filters: [KalmanFilter1D; 3],
+    /// Rolling peak combined-G (reset on recalibrate)
+    peak_g: f64,
+    /// Field descriptors (built once)
+    descriptors: Vec<FieldDescriptor>,
+}
+
+impl MPU6500 {
+    /// Construct from `SensorConfig` using the new config model.
+    pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
+        let (bus, address) = match &cfg.connection {
+            ConnectionConfig::I2c(I2cConnectionConfig { bus, address }) => {
+                (bus.clone(), *address as u8)
+            }
+            other => anyhow::bail!(
+                "MPU6500 requires an I2C connection, got {}",
+                other.connection_type_str()
+            ),
         };
 
-        // Estimate gravity components
-        let gravity = [
-            raw_accel[0] * scale,
-            raw_accel[1] * scale,
-            raw_accel[2] * scale,
-        ];
+        let settings: MPU6500Settings = cfg
+            .settings
+            .clone()
+            .try_into()
+            .map_err(|e: toml::de::Error| anyhow::anyhow!("MPU6500 settings: {}", e))?;
 
-        // Remove gravity to get linear acceleration
-        [
-            raw_accel[0] - gravity[0],
-            raw_accel[1] - gravity[1],
-            raw_accel[2],
-        ]
-    }
+        let i2c = I2cdev::new(&bus).context("Failed to open I2C device")?;
 
-    pub fn new(bus: &str, device: I2CDevice) -> Result<Self> {
-        let i2c = I2cdev::new(bus).context("Failed to open I2C device")?;
-        let settings: MPU6500Settings = serde_yaml_ng::from_value(device.settings)?;
-
-        // Create Kalman filters using config parameters
-        let accel_cfg = &settings.accel_filter;
-        let accel_z_cfg = &settings.accel_z_filter;
-        let gyro_cfg = &settings.gyro_filter;
-
-        let accel_filters = [
-            KalmanFilter1D::new(accel_cfg.process_noise, accel_cfg.measurement_noise)
-                .with_dead_zone(accel_cfg.dead_zone),
-            KalmanFilter1D::new(accel_cfg.process_noise, accel_cfg.measurement_noise)
-                .with_dead_zone(accel_cfg.dead_zone),
-            // Use tighter filtering for Z-axis to reduce jitter
-            KalmanFilter1D::new(
-                accel_z_cfg.process_noise * 0.5,
-                accel_z_cfg.measurement_noise * 0.7
-            ).with_dead_zone(accel_z_cfg.dead_zone * 0.5),
-        ];
-
-        let gyro_filters = [
-            KalmanFilter1D::new(gyro_cfg.process_noise, gyro_cfg.measurement_noise)
-                .with_dead_zone(gyro_cfg.dead_zone),
-            KalmanFilter1D::new(gyro_cfg.process_noise, gyro_cfg.measurement_noise)
-                .with_dead_zone(gyro_cfg.dead_zone),
-            KalmanFilter1D::new(gyro_cfg.process_noise, gyro_cfg.measurement_noise)
-                .with_dead_zone(gyro_cfg.dead_zone),
-        ];
+        let accel_filters = Self::build_accel_filters(&settings);
+        let linear_filters = Self::build_linear_filters(&settings);
+        let gyro_filters = Self::build_gyro_filters(&settings);
+        let descriptors = Self::build_descriptors();
 
         let mut sensor = Self {
             i2c,
-            address: device.address,
-            name: device.name.clone(),
-            enabled: device.enabled,
+            address,
+            sensor_name: cfg.name.clone(),
+            enabled: cfg.enabled,
             settings,
-            calibration: CalibrationData {
-                accel_offsets: [0; 3],
-                gyro_offsets: [0; 3],
-            },
+            calibration: CalibrationData::default(),
             accel_filters,
+            linear_filters,
             gyro_filters,
+            peak_g: 0.0,
+            descriptors,
         };
 
         sensor.init()?;
-        sensor.calibrate()?;
-
+        sensor.do_calibrate()?;
         Ok(sensor)
     }
 
-    fn read_sensor(&mut self, register: u8) -> Result<i16> {
+    fn build_accel_filters(s: &MPU6500Settings) -> [KalmanFilter1D; 3] {
+        let a = &s.accel_filter;
+        let z = &s.accel_z_filter;
+        [
+            KalmanFilter1D::new(a.process_noise, a.measurement_noise).with_dead_zone(a.dead_zone),
+            KalmanFilter1D::new(a.process_noise, a.measurement_noise).with_dead_zone(a.dead_zone),
+            KalmanFilter1D::new(z.process_noise, z.measurement_noise).with_dead_zone(z.dead_zone),
+        ]
+    }
+
+    fn build_linear_filters(s: &MPU6500Settings) -> [KalmanFilter1D; 3] {
+        let a = &s.accel_filter;
+        let z = &s.accel_z_filter;
+        [
+            KalmanFilter1D::new(a.process_noise, a.measurement_noise).with_dead_zone(a.dead_zone),
+            KalmanFilter1D::new(a.process_noise, a.measurement_noise).with_dead_zone(a.dead_zone),
+            KalmanFilter1D::new(z.process_noise, z.measurement_noise).with_dead_zone(z.dead_zone),
+        ]
+    }
+
+    fn build_gyro_filters(s: &MPU6500Settings) -> [KalmanFilter1D; 3] {
+        let g = &s.gyro_filter;
+        [
+            KalmanFilter1D::new(g.process_noise, g.measurement_noise).with_dead_zone(g.dead_zone),
+            KalmanFilter1D::new(g.process_noise, g.measurement_noise).with_dead_zone(g.dead_zone),
+            KalmanFilter1D::new(g.process_noise, g.measurement_noise).with_dead_zone(g.dead_zone),
+        ]
+    }
+
+    fn build_descriptors() -> Vec<FieldDescriptor> {
+        vec![
+            // Accelerometer
+            FieldDescriptor {
+                key: "accel_x",
+                label: "Accel X",
+                viz: VizType::GForce,
+                group: Some("ACCELEROMETER"),
+            },
+            FieldDescriptor {
+                key: "accel_y",
+                label: "Accel Y",
+                viz: VizType::GForce,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "accel_z",
+                label: "Accel Z",
+                viz: VizType::GForce,
+                group: None,
+            },
+            // G-forces
+            FieldDescriptor {
+                key: "g_force_x",
+                label: "G Lateral",
+                viz: VizType::GForce,
+                group: Some("G-FORCES"),
+            },
+            FieldDescriptor {
+                key: "g_force_y",
+                label: "G Forward",
+                viz: VizType::GForce,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "g_force_z",
+                label: "G Vertical",
+                viz: VizType::GForce,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "combined_g",
+                label: "Combined G",
+                viz: VizType::GForce,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "peak_g",
+                label: "Peak G",
+                viz: VizType::GForce,
+                group: None,
+            },
+            // Gyroscope
+            FieldDescriptor {
+                key: "roll_rate",
+                label: "Roll Rate",
+                viz: VizType::AngularRate,
+                group: Some("GYROSCOPE"),
+            },
+            FieldDescriptor {
+                key: "pitch_rate",
+                label: "Pitch Rate",
+                viz: VizType::AngularRate,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "yaw_rate",
+                label: "Yaw Rate",
+                viz: VizType::AngularRate,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "angular_velocity",
+                label: "Angular Vel",
+                viz: VizType::AngularRate,
+                group: None,
+            },
+            // Orientation
+            FieldDescriptor {
+                key: "lean_angle",
+                label: "Lean Angle",
+                viz: VizType::Angle,
+                group: Some("ORIENTATION"),
+            },
+            FieldDescriptor {
+                key: "bank_angle",
+                label: "Bank Angle",
+                viz: VizType::Angle,
+                group: None,
+            },
+            FieldDescriptor {
+                key: "tilt_angle",
+                label: "Tilt Angle",
+                viz: VizType::Angle,
+                group: None,
+            },
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    fn read_register_i16(&mut self, reg: u8) -> Result<i16> {
         let mut buf = [0u8; 2];
-        self.i2c.write_read(self.address, &[register], &mut buf)?;
+        self.i2c.write_read(self.address, &[reg], &mut buf)?;
         Ok(i16::from_be_bytes(buf))
     }
 
-    pub fn calibrate(&mut self) -> Result<()> {
-        // Log message suppressed in interactive mode to avoid TUI interference
-
-        let mut accel_sums = [0i32; 3];
-        let mut gyro_sums = [0i32; 3];
-        const CALIBRATION_SAMPLES: i32 = 300;
-
-        for _ in 0..CALIBRATION_SAMPLES {
-            let readings = self.read_raw()?;
-            for i in 0..3 {
-                accel_sums[i] += readings[i] as i32;
-                gyro_sums[i] += readings[i + 3] as i32;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        for i in 0..3 {
-            self.calibration.accel_offsets[i] = accel_sums[i] / CALIBRATION_SAMPLES;
-            self.calibration.gyro_offsets[i] = gyro_sums[i] / CALIBRATION_SAMPLES;
-        }
-
-        // Adjust Z acceleration offset for gravity
-        self.calibration.accel_offsets[2] -= match self.settings.accel_range {
-            16 => 2048,
-            8 => 4096,
-            4 => 8192,
-            2 => 16384,
-            _ => 2048,
-        };
-
-        // Calibration complete (message shown in UI status bar)
-        Ok(())
-    }
-
-    fn read_raw(&mut self) -> Result<[i16; 6]> {
+    fn read_raw_6(&mut self) -> Result<[i16; 6]> {
         Ok([
-            self.read_sensor(ACCEL_XOUT_H)?,
-            self.read_sensor(ACCEL_YOUT_H)?,
-            self.read_sensor(ACCEL_ZOUT_H)?,
-            self.read_sensor(GYRO_XOUT_H)?,
-            self.read_sensor(GYRO_YOUT_H)?,
-            self.read_sensor(GYRO_ZOUT_H)?,
+            self.read_register_i16(ACCEL_XOUT_H)?,
+            self.read_register_i16(ACCEL_XOUT_H + 2)?,
+            self.read_register_i16(ACCEL_XOUT_H + 4)?,
+            self.read_register_i16(GYRO_XOUT_H)?,
+            self.read_register_i16(GYRO_XOUT_H + 2)?,
+            self.read_register_i16(GYRO_XOUT_H + 4)?,
         ])
     }
 
-    fn calculate_angles(&self, values: &HashMap<String, f64>) -> Option<(f64, f64)> {
-        // Use the filtered "raw" values for angle calculations
-        let accel_x = values.get("accel_raw_x").copied().unwrap_or(0.0);
-        let accel_y = values.get("accel_raw_y").copied().unwrap_or(0.0);
-        let accel_z = values.get("accel_raw_z").copied().unwrap_or(0.0);
-        
-        let accel = [accel_x, accel_y, accel_z];
-
-        // If we didn’t find the raw accelerations, bail out
-        if accel == [0.0, 0.0, 0.0] {
-            return None;
+    fn accel_scale(&self) -> f64 {
+        match self.settings.accel_range {
+            2 => 16384.0,
+            4 => 8192.0,
+            8 => 4096.0,
+            16 => 2048.0,
+            _ => 2048.0,
         }
+    }
 
-        // Same angle calculation as before
-        let ax2 = accel[0] * accel[0];
-        let az2 = accel[2] * accel[2];
-        let lean_angle = (accel[1] / (ax2 + az2).sqrt()).atan().to_degrees();
-        let bank_angle = (accel[0] / accel[2].abs()).atan().to_degrees();
-        Some((lean_angle, bank_angle))
+    fn gyro_scale(&self) -> f64 {
+        match self.settings.gyro_range {
+            250 => 131.2,
+            500 => 65.6,
+            1000 => 32.8,
+            2000 => 16.4,
+            _ => 16.4,
+        }
+    }
+
+    fn gravity_for_range(&self) -> i32 {
+        match self.settings.accel_range {
+            2 => 16384,
+            4 => 8192,
+            8 => 4096,
+            16 => 2048,
+            _ => 2048,
+        }
+    }
+
+    /// Remove the static gravity component from accelerometer readings.
+    /// X and Y get gravity subtracted proportionally; Z is returned raw
+    /// (gravity is mostly along Z when the sensor is horizontal).
+    fn remove_gravity(raw: [f64; 3]) -> [f64; 3] {
+        let mag = (raw[0].powi(2) + raw[1].powi(2) + raw[2].powi(2)).sqrt();
+        if mag < 1e-9 {
+            return raw;
+        }
+        let scale = 1.0 / mag;
+        let gravity = [raw[0] * scale, raw[1] * scale, raw[2] * scale];
+        [raw[0] - gravity[0], raw[1] - gravity[1], raw[2]]
+    }
+
+    /// Perform calibration: 300 samples @ 10 ms, average, subtract 1G from Z.
+    pub fn do_calibrate(&mut self) -> Result<()> {
+        const N: i32 = 300;
+        let mut sums = [0i64; 6];
+        for _ in 0..N {
+            let raw = self.read_raw_6()?;
+            for i in 0..6 {
+                sums[i] += raw[i] as i64;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for i in 0..3 {
+            self.calibration.accel_offsets[i] = (sums[i] / N as i64) as i32;
+            self.calibration.gyro_offsets[i] = (sums[i + 3] / N as i64) as i32;
+        }
+        // Remove 1G from Z
+        self.calibration.accel_offsets[2] -= self.gravity_for_range();
+        self.peak_g = 0.0;
+        Ok(())
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sensor trait implementation
+// ---------------------------------------------------------------------------
+
 impl Sensor for MPU6500 {
     fn init(&mut self) -> Result<()> {
-        // Wake up the device
-        self.i2c.write(self.address, &[0x6B, 0x00])?;
-
-        // Configure sample rate divider
-        let sample_rate_div = (1000 / self.settings.sample_rate as u32 - 1) as u8;
-        self.i2c.write(self.address, &[0x19, sample_rate_div])?;
-
-        // Configure accelerometer and gyroscope ranges
-        let accel_config = match self.settings.accel_range {
-            16 => 0x18, // ±16g
-            8 => 0x10,  // ±8g
-            4 => 0x08,  // ±4g
-            2 => 0x00,  // ±2g
-            _ => 0x18,  // Default to ±16g
+        // Wake up
+        self.i2c.write(self.address, &[PWR_MGMT_1, 0x00])?;
+        // Sample rate divider
+        let div = ((1000u32 / self.settings.sample_rate as u32).saturating_sub(1)) as u8;
+        self.i2c.write(self.address, &[SMPLRT_DIV, div])?;
+        // Accel config
+        let accel_cfg: u8 = match self.settings.accel_range {
+            2 => 0x00,
+            4 => 0x08,
+            8 => 0x10,
+            16 => 0x18,
+            _ => 0x18,
         };
-
-        let gyro_config = match self.settings.gyro_range {
-            2000 => 0x18, // ±2000°/s
-            1000 => 0x10, // ±1000°/s
-            500 => 0x08,  // ±500°/s
-            250 => 0x00,  // ±250°/s
-            _ => 0x18,    // Default to ±2000°/s
+        self.i2c.write(self.address, &[ACCEL_CONFIG, accel_cfg])?;
+        // Gyro config
+        let gyro_cfg: u8 = match self.settings.gyro_range {
+            250 => 0x00,
+            500 => 0x08,
+            1000 => 0x10,
+            2000 => 0x18,
+            _ => 0x18,
         };
-
-        self.i2c
-            .write(self.address, &[ACCEL_CONFIG, accel_config])?;
-        self.i2c.write(self.address, &[GYRO_CONFIG, gyro_config])?;
-
+        self.i2c.write(self.address, &[GYRO_CONFIG, gyro_cfg])?;
         Ok(())
     }
 
     fn read(&mut self) -> Result<SensorData> {
-        let raw = self.read_raw()?;
+        let raw = self.read_raw_6()?;
+        let a_scale = self.accel_scale();
+        let g_scale = self.gyro_scale();
 
-        // Scale factors
-        let accel_scale = match self.settings.accel_range {
-            16 => 2048.0,
-            8 => 4096.0,
-            4 => 8192.0,
-            2 => 16384.0,
-            _ => 2048.0,
-        };
-        let gyro_scale = match self.settings.gyro_range {
-            2000 => 16.4,
-            1000 => 32.8,
-            500 => 65.6,
-            250 => 131.2,
-            _ => 16.4,
-        };
-
-        // Compute raw accelerations
-        let mut raw_accel = [0.0; 3];
-        for i in 0..3 {
-            raw_accel[i] = (raw[i] as i32 - self.calibration.accel_offsets[i]) as f64 / accel_scale;
-        }
-
-        // Compute gravity-removed accelerations (for G-forces)
-        let linear_accel = self.remove_gravity(raw_accel);
-
-        // Create separate filter instances for linear acceleration to avoid state corruption
-        let mut linear_filters = [
-            KalmanFilter1D::new(self.settings.accel_filter.process_noise, self.settings.accel_filter.measurement_noise)
-                .with_dead_zone(self.settings.accel_filter.dead_zone),
-            KalmanFilter1D::new(self.settings.accel_filter.process_noise, self.settings.accel_filter.measurement_noise)
-                .with_dead_zone(self.settings.accel_filter.dead_zone),
-            KalmanFilter1D::new(self.settings.accel_z_filter.process_noise, self.settings.accel_z_filter.measurement_noise)
-                .with_dead_zone(self.settings.accel_z_filter.dead_zone),
+        // Apply calibration and scale
+        let raw_accel: [f64; 3] = [
+            (raw[0] as i32 - self.calibration.accel_offsets[0]) as f64 / a_scale,
+            (raw[1] as i32 - self.calibration.accel_offsets[1]) as f64 / a_scale,
+            (raw[2] as i32 - self.calibration.accel_offsets[2]) as f64 / a_scale,
         ];
 
-        let mut data = HashMap::new();
-        
-        // 1) Filtered raw accelerations (used for angle calculations)
-        let axes = ["x", "y", "z"];
-        for i in 0..3 {
-            let filtered_raw = self.accel_filters[i].update(raw_accel[i]);
-            data.insert(format!("accel_raw_{}", axes[i]), filtered_raw);
+        let linear_accel = Self::remove_gravity(raw_accel);
+
+        // Filter raw accel (stateful)
+        let filt_raw: [f64; 3] = [
+            self.accel_filters[0].update(raw_accel[0]),
+            self.accel_filters[1].update(raw_accel[1]),
+            self.accel_filters[2].update(raw_accel[2]),
+        ];
+
+        // Filter linear/G-force accel (stateful — bug fixed vs old code)
+        let filt_lin: [f64; 3] = [
+            self.linear_filters[0].update(linear_accel[0]),
+            self.linear_filters[1].update(linear_accel[1]),
+            self.linear_filters[2].update(linear_accel[2]),
+        ];
+
+        // Gyro
+        let raw_gyro: [f64; 3] = [
+            (raw[3] as i32 - self.calibration.gyro_offsets[0]) as f64 / g_scale,
+            (raw[4] as i32 - self.calibration.gyro_offsets[1]) as f64 / g_scale,
+            (raw[5] as i32 - self.calibration.gyro_offsets[2]) as f64 / g_scale,
+        ];
+        let filt_gyro: [f64; 3] = [
+            self.gyro_filters[0].update(raw_gyro[0]),
+            self.gyro_filters[1].update(raw_gyro[1]),
+            self.gyro_filters[2].update(raw_gyro[2]),
+        ];
+
+        // Derived quantities
+        let combined_g = (filt_lin[0].powi(2) + filt_lin[1].powi(2) + filt_lin[2].powi(2)).sqrt();
+        if combined_g > self.peak_g {
+            self.peak_g = combined_g;
         }
 
-        // 2) Filtered linear accelerations (used for g-forces)
-        for i in 0..3 {
-            let filtered_linear = linear_filters[i].update(linear_accel[i]);
-            data.insert(format!("accel_{}", axes[i]), filtered_linear);
-            data.insert(format!("g_force_{}", axes[i]), filtered_linear);
-        }
+        let tilt_angle = {
+            let ax2 = filt_raw[0].powi(2);
+            let ay2 = filt_raw[1].powi(2);
+            let az = filt_raw[2];
+            ((ax2 + ay2).sqrt() / az.abs().max(1e-9))
+                .atan()
+                .to_degrees()
+        };
+        let lean_angle = (filt_raw[1]
+            / (filt_raw[0].powi(2) + filt_raw[2].powi(2)).sqrt().max(1e-9))
+        .atan()
+        .to_degrees();
+        let bank_angle = (filt_raw[0] / filt_raw[2].abs().max(1e-9))
+            .atan()
+            .to_degrees();
+        let angular_velocity =
+            (filt_gyro[0].powi(2) + filt_gyro[1].powi(2) + filt_gyro[2].powi(2)).sqrt();
 
-        // Filtered gyro data
-        for i in 0..3 {
-            let raw_gyro =
-                (raw[i + 3] as i32 - self.calibration.gyro_offsets[i]) as f64 / gyro_scale;
-            let filtered_gyro = self.gyro_filters[i].update(raw_gyro);
-            data.insert(format!("gyro_{}", axes[i]), filtered_gyro);
-            
-            // Add human-readable rate names
-            let rate_name = match i {
-                0 => "roll_rate",
-                1 => "pitch_rate",
-                2 => "yaw_rate",
-                _ => unreachable!(),
-            };
-            data.insert(rate_name.to_string(), filtered_gyro);
-        }
+        let mut fields = HashMap::new();
+        // Raw accel
+        fields.insert("accel_raw_x".to_string(), filt_raw[0]);
+        fields.insert("accel_raw_y".to_string(), filt_raw[1]);
+        fields.insert("accel_raw_z".to_string(), filt_raw[2]);
+        // Linear accel / G-forces
+        fields.insert("accel_x".to_string(), filt_lin[0]);
+        fields.insert("accel_y".to_string(), filt_lin[1]);
+        fields.insert("accel_z".to_string(), filt_lin[2]);
+        fields.insert("g_force_x".to_string(), filt_lin[0]);
+        fields.insert("g_force_y".to_string(), filt_lin[1]);
+        fields.insert("g_force_z".to_string(), filt_lin[2]);
+        fields.insert("combined_g".to_string(), combined_g);
+        fields.insert("peak_g".to_string(), self.peak_g);
+        // Gyro
+        fields.insert("gyro_x".to_string(), filt_gyro[0]);
+        fields.insert("gyro_y".to_string(), filt_gyro[1]);
+        fields.insert("gyro_z".to_string(), filt_gyro[2]);
+        fields.insert("roll_rate".to_string(), filt_gyro[0]);
+        fields.insert("pitch_rate".to_string(), filt_gyro[1]);
+        fields.insert("yaw_rate".to_string(), filt_gyro[2]);
+        fields.insert("angular_velocity".to_string(), angular_velocity);
+        // Orientation
+        fields.insert("lean_angle".to_string(), lean_angle);
+        fields.insert("bank_angle".to_string(), bank_angle);
+        fields.insert("tilt_angle".to_string(), tilt_angle);
 
-        // Calculate and add angles
-        if let Some((lean, bank)) = self.calculate_angles(&data) {
-            data.insert("lean_angle".to_string(), lean);
-            data.insert("bank_angle".to_string(), bank);
-        }
-
-        // Return sensor data
         Ok(SensorData {
             timestamp: Utc::now(),
-            data,
+            fields,
         })
     }
 
-    fn get_name(&self) -> &str {
-        &self.name
+    fn name(&self) -> &str {
+        &self.sensor_name
     }
-
+    fn driver_name(&self) -> &str {
+        "MPU6500"
+    }
     fn is_enabled(&self) -> bool {
         self.enabled
     }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        // Status change shown in UI status bar
-    }
-
-    fn get_info(&self) -> Result<String> {
-        Ok(format!(
-            "{} MPU6500 IMU (addr: 0x{:02X}) - Accel: ±{}g, Gyro: ±{}°/s",
-            self.name, self.address, self.settings.accel_range, self.settings.gyro_range
-        ))
-    }
-
-    fn display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)> {
-        let mut lines = 0;
-        let mut output = String::new();
-
-        output.push_str(&format!(
-            "Device: {} @ {}\n",
-            self.name,
-            data.timestamp.format("%H:%M:%S.%3f")
-        ));
-        lines += 1;
-
-        output.push_str("G-Forces          │ Turn Rates        \n");
-        output.push_str("──────────────────┼───────────────────\n");
-        lines += 2;
-
-        // Extract G-forces
-        let g_x = data.data.get("g_force_x").unwrap_or(&0.0);
-        let g_y = data.data.get("g_force_y").unwrap_or(&0.0);
-        let g_z = data.data.get("g_force_z").unwrap_or(&0.0);
-
-        // Extract turn rates
-        let roll = data.data.get("roll_rate").unwrap_or(&0.0);
-        let pitch = data.data.get("pitch_rate").unwrap_or(&0.0);
-        let yaw = data.data.get("yaw_rate").unwrap_or(&0.0);
-
-        output.push_str(&format!("Lateral:  {:6.3} G │ Roll:  {:6.2}°/s\n", g_x, roll));
-        output.push_str(&format!("Forward:  {:6.3} G │ Pitch: {:6.2}°/s\n", g_y, pitch));
-        output.push_str(&format!("Vertical: {:6.3} G │ Yaw:   {:6.2}°/s\n", g_z, yaw));
-        lines += 3;
-
-        // Display angles if available
-        if let (Some(lean), Some(bank)) = (data.data.get("lean_angle"), data.data.get("bank_angle")) {
-            output.push_str("──────────────────┴───────────────────\n");
-            output.push_str(&format!(
-                "Lean Angle: {:6.2}°  Bank Angle: {:6.2}°\n",
-                lean, bank
-            ));
-            lines += 2;
-        }
-
-        Ok((lines, Some(output)))
+    fn set_enabled(&mut self, v: bool) {
+        self.enabled = v;
     }
 
     fn recalibrate(&mut self) -> Result<()> {
-        // Reset filters before recalibration
-        for filter in &mut self.accel_filters {
-            filter.reset();
+        for f in &mut self.accel_filters {
+            f.reset();
         }
-        for filter in &mut self.gyro_filters {
-            filter.reset();
+        for f in &mut self.linear_filters {
+            f.reset();
         }
-        
-        // Recalibrate
-        self.calibrate()?;
-        // Recalibration message shown in UI status bar
-        Ok(())
+        for f in &mut self.gyro_filters {
+            f.reset();
+        }
+        self.do_calibrate()
+    }
+
+    fn field_descriptors(&self) -> &[FieldDescriptor] {
+        &self.descriptors
     }
 }

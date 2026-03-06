@@ -1,66 +1,69 @@
+//! Sensor abstraction layer.
+//!
+//! Any new sensor driver only needs to:
+//!   1. Implement the `Sensor` trait
+//!   2. Add a match arm in `registry::create_sensor`
+
+pub mod gpio;
+#[cfg(target_os = "linux")]
+pub mod i2c;
+pub mod registry;
+pub mod synthetic;
+
 use anyhow::Result;
-use serde::Deserialize;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-pub mod i2c;
+// ---------------------------------------------------------------------------
+// Field descriptor — tells the TUI how to display a field
+// ---------------------------------------------------------------------------
 
-/// Configuration for sensors and MQTT settings.
-///
-/// # Fields
-///
-/// * `sensors` - A vector containing the types of sensors to be used.
-#[derive(Debug, Deserialize)]
-pub struct SensorConfig {
-    pub sensors: Vec<SensorType>,
+#[derive(Debug, Clone)]
+pub enum VizType {
+    Value,
+    GForce,
+    AngularRate,
+    Angle,
+    Numeric { unit: &'static str },
 }
 
-/// Enum representing different types of sensors.
-///
-/// # Variants
-///
-/// * `I2C` - Configuration for I2C sensors.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-pub enum SensorType {
-    #[serde(rename = "i2c")]
-    I2C(i2c::I2CConfig),
+#[derive(Debug, Clone)]
+pub struct FieldDescriptor {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub viz: VizType,
+    /// Group header shown in the data panel (None = continuation)
+    pub group: Option<&'static str>,
 }
 
-/// Trait representing a generic sensor.
-///
-/// # Required Methods
-///
-/// * `init` - Initializes the sensor.
-/// * `read` - Reads data from the sensor.
-/// * `get_info` - Retrieves information about the sensor.
-/// * `get_name` - Returns the name of the sensor.
-/// * `is_enabled` - Check if sensor is enabled.
-/// * `set_enabled` - Enable or disable the sensor.
-/// * `display_data` - Formats the sensor data for display.
-pub trait Sensor: Send {
-    fn init(&mut self) -> Result<()>;
-    fn read(&mut self) -> Result<SensorData>;
-    fn get_info(&self) -> Result<String>;
-    fn get_name(&self) -> &str;
-    fn is_enabled(&self) -> bool;
-    fn set_enabled(&mut self, enabled: bool);
-    fn display_data(&self, data: &SensorData) -> Result<(u16, Option<String>)>;
-    
-    /// Recalibrate the sensor (optional, default does nothing)
-    fn recalibrate(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
+// ---------------------------------------------------------------------------
+// Sensor data
+// ---------------------------------------------------------------------------
 
-/// Struct representing sensor data.
-///
-/// # Fields
-///
-/// * `timestamp` - The timestamp of the data.
-/// * `data` - A HashMap of key-value pairs representing the sensor values.
 #[derive(Debug, Clone)]
 pub struct SensorData {
     pub timestamp: DateTime<Utc>,
-    pub data: HashMap<String, f64>,
+    pub fields: HashMap<String, f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Sensor trait
+// ---------------------------------------------------------------------------
+
+/// A hardware sensor.  Implementations are synchronous — Tokio tasks
+/// run blocking operations via `spawn_blocking` when needed.
+pub trait Sensor: Send + 'static {
+    fn init(&mut self) -> Result<()>;
+    fn read(&mut self) -> Result<SensorData>;
+    fn name(&self) -> &str;
+    fn driver_name(&self) -> &str {
+        "unknown"
+    }
+    fn is_enabled(&self) -> bool;
+    fn set_enabled(&mut self, enabled: bool);
+    fn recalibrate(&mut self) -> Result<()> {
+        Ok(())
+    }
+    /// Ordered field descriptors for TUI rendering.
+    fn field_descriptors(&self) -> &[FieldDescriptor];
 }

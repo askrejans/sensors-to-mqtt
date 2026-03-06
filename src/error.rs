@@ -1,7 +1,4 @@
-//! Custom error types for the sensors-to-mqtt application.
-//!
-//! This module defines domain-specific error types using thiserror,
-//! providing clear error messages and proper error context propagation.
+//! Error types for sensors-to-mqtt.
 
 use thiserror::Error;
 

@@ -1,243 +1,214 @@
-//! Service layer for managing sensor reading and publishing.
-//!
-//! This module provides the core service logic that can run in either
-//! interactive (with UI) or daemon (headless) mode.
+//! Per-sensor Tokio tasks and service lifecycle.
 
-use crate::config::AppConfig;
-use crate::error::{AppError, Result};
-use crate::mqtt_handler::MqttHandler;
-use crate::publisher::{MqttPublisher, NoOpPublisher, Publisher};
-use crate::sensors::i2c::I2CBus;
-use crate::sensors::{Sensor, SensorType};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
-/// Run mode for the service
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
-    /// Interactive mode with TUI
-    Interactive,
-    /// Background daemon mode
-    Daemon,
+use crate::config::SensorConfig;
+use crate::models::{AppState, SensorHistory, SensorStatus, SharedState};
+use crate::mqtt_handler::MqttHandle;
+use crate::sensors::registry::create_sensor;
+use crate::sensors::{Sensor, SensorData};
+
+// ---------------------------------------------------------------------------
+// Sensor reading event
+// ---------------------------------------------------------------------------
+
+pub struct SensorEvent {
+    pub name: String,
+    pub data: SensorData,
 }
 
-/// Service state for managing sensors and publishing
-pub struct SensorService {
-    config: Arc<AppConfig>,
-    sensor_buses: Vec<I2CBus>,
-    publisher: Arc<dyn Publisher>,
-    should_stop: Arc<AtomicBool>,
+// ---------------------------------------------------------------------------
+// Initialise AppState with sensor stubs (before tasks start)
+// ---------------------------------------------------------------------------
+
+pub fn register_sensors(state: &mut AppState, sensors: &[SensorConfig]) {
+    for cfg in sensors {
+        let history_size = cfg
+            .settings
+            .as_ref()
+            .and_then(|v| v.get("history_size"))
+            .and_then(|v| v.as_integer())
+            .unwrap_or(600) as usize;
+
+        state.sensor_statuses.insert(
+            cfg.name.clone(),
+            SensorStatus {
+                name: cfg.name.clone(),
+                driver: cfg.driver.clone(),
+                connection_display: cfg.connection.to_display(),
+                enabled: cfg.enabled,
+                connected: false,
+                last_error: None,
+            },
+        );
+
+        state
+            .sensor_history
+            .insert(cfg.name.clone(), SensorHistory::new(history_size));
+    }
 }
 
-impl SensorService {
-    /// Create a new sensor service
-    pub fn new(config: Arc<AppConfig>, no_mqtt: bool) -> Result<Self> {
-        // Load sensor configuration
-        let sensor_config_content = std::fs::read_to_string("config.yaml")
-            .map_err(|e| AppError::Io(e))?;
-        let sensor_config: crate::sensors::SensorConfig = serde_yaml_ng::from_str(&sensor_config_content)
-            .map_err(|e| crate::error::ConfigError::ParseError(e.to_string()))?;
+// ---------------------------------------------------------------------------
+// Spawn one async task per sensor
+// ---------------------------------------------------------------------------
 
-        // Initialize sensor buses
-        let mut sensor_buses = Vec::new();
-        for sensor_type in sensor_config.sensors {
-            match sensor_type {
-                SensorType::I2C(i2c_config) => {
-                    let bus = I2CBus::new(i2c_config)?;
-                    sensor_buses.push(bus);
-                }
+/// Spawn a task that continuously reads the sensor and pushes events.
+/// Uses `spawn_blocking` for the blocking I2C read.
+pub fn spawn_sensor_task(
+    cfg: SensorConfig,
+    state: SharedState,
+    mqtt: Option<MqttHandle>,
+    cancel: CancellationToken,
+    base_topic: String,
+) {
+    tokio::spawn(async move {
+        let name = cfg.name.clone();
+        info!("Starting sensor task for '{}'", name);
+
+        // Build the driver
+        let sensor_result = tokio::task::spawn_blocking({
+            let cfg2 = cfg.clone();
+            move || create_sensor(&cfg2)
+        })
+        .await;
+
+        let mut sensor: Box<dyn Sensor> = match sensor_result {
+            Ok(Ok(s)) => {
+                update_status(&state, &cfg.name, true, None).await;
+                s
             }
-        }
-
-        // Initialize publisher
-        let publisher: Arc<dyn Publisher> = if no_mqtt {
-            log::info!("MQTT publishing disabled");
-            Arc::new(NoOpPublisher)
-        } else {
-            let mqtt_handler = Arc::new(
-                MqttHandler::new(config.clone())
-                    .map_err(|e| crate::error::MqttError::ConnectionError(e))?
-            );
-            log::info!("MQTT publisher initialized");
-            Arc::new(MqttPublisher::new(
-                mqtt_handler,
-                config.mqtt.base_topic.clone(),
-            ))
+            Ok(Err(e)) => {
+                error!("Failed to initialise sensor '{}': {}", name, e);
+                update_status(&state, &cfg.name, false, Some(e.to_string())).await;
+                return;
+            }
+            Err(e) => {
+                error!("Panic creating sensor '{}': {}", name, e);
+                return;
+            }
         };
 
-        Ok(Self {
-            config,
-            sensor_buses,
-            publisher,
-            should_stop: Arc::new(AtomicBool::new(false)),
-        })
-    }
+        let interval_ms = 20u64; // 50 Hz; driver sample_rate limits actual rate
 
-    /// Get sensor names for UI
-    pub fn get_sensor_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        for bus in &self.sensor_buses {
-            for device in &bus.devices {
-                names.push(device.get_name().to_string());
-            }
-        }
-        names
-    }
-
-    /// Get mutable reference to sensor by name
-    pub fn get_sensor_mut(&mut self, name: &str) -> Option<&mut Box<dyn Sensor>> {
-        for bus in &mut self.sensor_buses {
-            for device in &mut bus.devices {
-                if device.get_name() == name {
-                    return Some(device);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("Sensor task '{}' cancelled", name);
+                    break;
                 }
-            }
-        }
-        None
-    }
-
-    /// Read data from all enabled sensors
-    pub fn read_sensors(&mut self) -> Result<Vec<(String, crate::sensors::SensorData)>> {
-        let mut results = Vec::new();
-
-        for bus in &mut self.sensor_buses {
-            for device in &mut bus.devices {
-                if !device.is_enabled() {
-                    continue;
-                }
-
-                match device.read() {
-                    Ok(data) => {
-                        let name = device.get_name().to_string();
-                        results.push((name, data));
-                    }
-                    Err(e) => {
-                        log::error!("Failed to read sensor {}: {}", device.get_name(), e);
-                    }
-                }
-            }
-        }
-
-        Ok(results)
-    }
-
-    /// Publish sensor data
-    pub fn publish(&self, sensor_name: &str, data: &crate::sensors::SensorData) -> Result<()> {
-        self.publisher.publish(sensor_name, data)?;
-        Ok(())
-    }
-
-    /// Check if publisher is connected
-    pub fn is_publisher_connected(&self) -> bool {
-        self.publisher.is_connected()
-    }
-
-    /// Attempt to reconnect publisher
-    pub fn reconnect_publisher(&self) -> Result<()> {
-        self.publisher.reconnect()?;
-        Ok(())
-    }
-
-    /// Get the stop signal
-    pub fn get_stop_signal(&self) -> Arc<AtomicBool> {
-        self.should_stop.clone()
-    }
-
-    /// Request service to stop
-    pub fn request_stop(&self) {
-        self.should_stop.store(true, Ordering::SeqCst);
-    }
-
-    /// Recalibrate a specific sensor
-    pub fn recalibrate_sensor(&mut self, sensor_name: &str) -> Result<()> {
-        if let Some(sensor) = self.get_sensor_mut(sensor_name) {
-            sensor.recalibrate()?;
-            // Recalibration message shown in UI status bar
-            Ok(())
-        } else {
-            Err(crate::error::SensorError::ReadError(format!(
-                "Sensor {} not found",
-                sensor_name
-            )).into())
-        }
-    }
-
-    /// Run the service in daemon mode
-    pub fn run_daemon(&mut self) -> Result<()> {
-        log::info!("Starting sensor service in daemon mode");
-        let update_interval = Duration::from_millis(self.config.service.update_interval_ms);
-        let mut last_reconnect_attempt = Instant::now();
-        let reconnect_delay = Duration::from_millis(self.config.service.reconnect_delay_ms);
-
-        while !self.should_stop.load(Ordering::SeqCst) {
-            let loop_start = Instant::now();
-
-            // Try to reconnect if disconnected
-            if !self.is_publisher_connected() && last_reconnect_attempt.elapsed() > reconnect_delay {
-                log::warn!("Publisher disconnected, attempting reconnection...");
-                if let Err(e) = self.reconnect_publisher() {
-                    log::error!("Reconnection failed: {}", e);
-                    last_reconnect_attempt = Instant::now();
-                } else {
-                    log::info!("Reconnection successful");
-                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
             }
 
-            // Read and publish sensor data
-            match self.read_sensors() {
-                Ok(sensor_data) => {
-                    for (name, data) in sensor_data {
-                        if let Err(e) = self.publish(&name, &data) {
-                            log::error!("Failed to publish data for {}: {}", name, e);
-                        }
+            // Read (blocking) in a thread pool
+            let read_result = {
+                // We need to move the sensor into spawn_blocking, but it's borrowed.
+                // Pattern: read synchronously here since I2C reads are ~1ms.
+                // For long-blocking drivers, restructure to Arc<Mutex<Box<dyn Sensor>>>.
+                match sensor.read() {
+                    Ok(data) => Ok(data),
+                    Err(e) => Err(e.to_string()),
+                }
+            };
+
+            match read_result {
+                Ok(data) => {
+                    update_status(&state, &name, true, None).await;
+                    push_data(&state, &name, data.clone()).await;
+                    if let Some(ref h) = mqtt {
+                        publish_sensor_data(h, &base_topic, &name, &data).await;
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to read sensors: {}", e);
+                    warn!("Read error on '{}': {}", name, e);
+                    update_status(&state, &name, false, Some(e)).await;
                 }
             }
-
-            // Sleep for remaining time
-            let elapsed = loop_start.elapsed();
-            if elapsed < update_interval {
-                thread::sleep(update_interval - elapsed);
-            }
         }
+    });
+}
 
-        log::info!("Sensor service stopped");
-        Ok(())
-    }
+// ---------------------------------------------------------------------------
+// State helpers
+// ---------------------------------------------------------------------------
 
-    /// Reload configuration
-    pub fn reload_config(&mut self) -> Result<()> {
-        log::info!("Reloading configuration...");
-        // In a full implementation, this would reload the config file
-        // and reinitialize sensors and MQTT connection
-        log::warn!("Configuration reload not fully implemented yet");
-        Ok(())
+async fn update_status(state: &SharedState, name: &str, connected: bool, error: Option<String>) {
+    let mut s = state.write().await;
+    if let Some(st) = s.sensor_statuses.get_mut(name) {
+        st.connected = connected;
+        st.last_error = error;
     }
 }
 
-/// Setup signal handlers for graceful shutdown
-pub fn setup_signal_handler(stop_signal: Arc<AtomicBool>) -> Result<()> {
-    ctrlc::set_handler(move || {
-        log::info!("Received shutdown signal");
-        stop_signal.store(true, Ordering::SeqCst);
-    })
-    .map_err(|e| crate::error::ServiceError::SignalError(e.to_string()))?;
-
-    Ok(())
+async fn push_data(state: &SharedState, name: &str, data: SensorData) {
+    let mut s = state.write().await;
+    if let Some(hist) = s.sensor_history.get_mut(name) {
+        hist.push(&data);
+    }
+    s.sensor_data.insert(name.to_string(), data);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ---------------------------------------------------------------------------
+// MQTT publishing helper
+// ---------------------------------------------------------------------------
 
-    #[test]
-    fn test_run_mode() {
-        assert_eq!(RunMode::Interactive, RunMode::Interactive);
-        assert_ne!(RunMode::Interactive, RunMode::Daemon);
+async fn publish_sensor_data(mqtt: &MqttHandle, base_topic: &str, name: &str, data: &SensorData) {
+    use serde_json::json;
+
+    let ts = data.timestamp.to_rfc3339();
+
+    // INFO
+    let info_payload = json!({ "sensor": name, "timestamp": ts }).to_string();
+    mqtt.publish(format!("{}/IMU/{}/INFO", base_topic, name), info_payload)
+        .await;
+
+    // Build separate filtered and derived maps
+    let filtered_keys = [
+        "accel_x",
+        "accel_y",
+        "accel_z",
+        "gyro_x",
+        "gyro_y",
+        "gyro_z",
+        "roll_rate",
+        "pitch_rate",
+        "yaw_rate",
+    ];
+    let mut filtered = serde_json::Map::new();
+    filtered.insert("timestamp".into(), json!(ts));
+    for key in &filtered_keys {
+        if let Some(&v) = data.fields.get(*key) {
+            filtered.insert(key.to_string(), json!(v));
+        }
     }
+    mqtt.publish(
+        format!("{}/IMU/{}/FILTERED", base_topic, name),
+        serde_json::Value::Object(filtered).to_string(),
+    )
+    .await;
+
+    // DERIVED — everything else
+    let derived_keys = [
+        "g_force_x",
+        "g_force_y",
+        "g_force_z",
+        "combined_g",
+        "peak_g",
+        "lean_angle",
+        "bank_angle",
+        "tilt_angle",
+        "angular_velocity",
+    ];
+    let mut derived = serde_json::Map::new();
+    derived.insert("timestamp".into(), json!(ts));
+    for key in &derived_keys {
+        if let Some(&v) = data.fields.get(*key) {
+            derived.insert(key.to_string(), json!(v));
+        }
+    }
+    mqtt.publish(
+        format!("{}/IMU/{}/DERIVED", base_topic, name),
+        serde_json::Value::Object(derived).to_string(),
+    )
+    .await;
 }

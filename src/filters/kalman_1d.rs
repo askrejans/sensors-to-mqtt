@@ -1,3 +1,5 @@
+//! 1-D Kalman filter with adaptive gain and optional dead-zone.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

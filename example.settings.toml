@@ -1,0 +1,172 @@
+# sensors-to-mqtt — example.settings.toml
+#
+# Copy this file to /etc/sensors-to-mqtt/config.toml (or pass with --config).
+# All values shown are the built-in defaults unless noted otherwise.
+#
+# Environment variable overrides (highest priority):
+#   SENSORS_TO_MQTT__MQTT__HOST=broker.local
+#   SENSORS_TO_MQTT__LOG_LEVEL=debug
+#   (double-underscore maps to each level of TOML nesting)
+#
+# Supported drivers:
+#   mpu6500 | bmp280 | bme280 | sht31 | bh1750 | ina219 | ads1115 | gpio_button | synthetic
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log_level = "info"   # trace | debug | info | warn | error
+log_json  = false    # true = JSON lines (recommended for systemd / journald)
+
+# ---------------------------------------------------------------------------
+# TUI
+# ---------------------------------------------------------------------------
+tui_refresh_rate_ms = 100
+
+# ---------------------------------------------------------------------------
+# MQTT
+# ---------------------------------------------------------------------------
+[mqtt]
+enabled         = true
+host            = "localhost"
+port            = 1883
+base_topic      = "/SENSORS"
+client_id       = "sensors-to-mqtt"
+keep_alive_secs = 20
+# username = ""
+# password = ""
+
+# ---------------------------------------------------------------------------
+# Sensors  — add one [[sensors]] block per physical device
+# ---------------------------------------------------------------------------
+
+# --- MPU-6500: 6-axis IMU (acceleration + gyroscope) ----------------------
+[[sensors]]
+name    = "imu1"
+driver  = "mpu6500"
+enabled = true
+
+[sensors.connection]
+type    = "i2c"
+device  = "/dev/i2c-1"
+address = 0x68          # AD0=GND → 0x68, AD0=VCC → 0x69
+
+[sensors.settings]
+history_size = 600      # rolling window kept for TUI sparklines
+
+# --- BME280: temperature + pressure + humidity ----------------------------
+# [[sensors]]
+# name    = "climate"
+# driver  = "bme280"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x76          # SDO=GND → 0x76, SDO=VCC → 0x77
+
+# --- BMP280: temperature + pressure ---------------------------------------
+# [[sensors]]
+# name    = "pressure"
+# driver  = "bmp280"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x77
+
+# --- SHT31: temperature + humidity ----------------------------------------
+# [[sensors]]
+# name    = "temp_humidity"
+# driver  = "sht31"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x44          # ADDR=GND → 0x44, ADDR=VCC → 0x45
+
+# --- BH1750: ambient light (lux) ------------------------------------------
+# [[sensors]]
+# name    = "light"
+# driver  = "bh1750"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x23          # ADDR=GND → 0x23, ADDR=VCC → 0x5C
+
+# --- INA219: current / voltage / power monitor ----------------------------
+# [[sensors]]
+# name    = "battery"
+# driver  = "ina219"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x40
+#
+# [sensors.settings]
+# shunt_ohms    = 0.1     # shunt resistor value in ohms
+# max_current_a = 3.2     # sets current resolution
+# battery_min_v = 11.0    # for state-of-charge estimation
+# battery_max_v = 14.4
+
+# --- ADS1115: 4-channel 16-bit ADC (analog inputs) ------------------------
+# [[sensors]]
+# name    = "analog"
+# driver  = "ads1115"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x48          # ADDR pin: GND=0x48, VCC=0x49, SDA=0x4A, SCL=0x4B
+#
+# [sensors.settings]
+# gain        = "pga_4_096v"   # ±4.096 V full-scale
+# sample_rate = "sps_128"
+#
+# [[sensors.settings.channels]]
+# index  = 0
+# label  = "Throttle"
+# unit   = "%"
+# scale  = 25.6    # value = (volts - offset) * scale
+# offset = 0.0
+#
+# [[sensors.settings.channels]]
+# index  = 1
+# label  = "Coolant"
+# unit   = "C"
+# scale  = 100.0
+# offset = -1.0
+
+# --- GPIO button / switch -------------------------------------------------
+# [[sensors]]
+# name    = "brake_switch"
+# driver  = "gpio_button"
+# enabled = true
+#
+# [sensors.connection]
+# type        = "gpio"
+# pin         = 17        # BCM pin number
+# active_low  = false     # true = LOW means pressed/active
+# debounce_ms = 20
+
+# --- Synthetic test sensor (no hardware required) -------------------------
+# [[sensors]]
+# name    = "synthetic"
+# driver  = "synthetic"
+# enabled = true
+#
+# [sensors.connection]
+# type    = "i2c"
+# device  = "/dev/i2c-1"
+# address = 0x00
+#
+# [sensors.settings]
+# rate_hz = 50     # simulated sample rate in Hz
+# speed   = 1.0    # waveform speed multiplier (>1 = faster)
+# noise   = 0.02   # noise amplitude added to each reading
