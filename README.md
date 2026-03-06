@@ -31,6 +31,7 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 | `ina219` | I2C | TI INA219 | Bus voltage (V), shunt voltage (mV), current (A), power (W), state-of-charge (%) |
 | `ads1115` | I2C | TI ADS1115 | 4-channel 16-bit ADC — configurable per-channel gain, sample rate, and linear scaling |
 | `gpio_button` | GPIO | — | State (0/1), press count, press duration; software debounce |
+| `sds011` | Serial (USB) or TCP | Nova Fitness SDS011 | PM2.5 (μg/m³), PM10 (μg/m³), AQI (EPA) |
 | `synthetic` | — | — | 15 simulated fields (g-force, gyro, temperature, pressure, humidity, battery, RPM, speed, throttle); sine/sawtooth waveforms |
 
 > GPS and ECU (Speeduino) are handled by dedicated sibling projects.
@@ -136,6 +137,14 @@ type        = "gpio"
 pin         = 17          # BCM pin number
 active_low  = false       # true = LOW means pressed/active
 debounce_ms = 50          # software debounce window
+```
+
+**Serial** (USB or UART)
+```toml
+[sensors.connection]
+type      = "serial"
+port      = "/dev/ttyUSB0"   # or /dev/ttyS0, /dev/ttyAMA0, etc.
+baud_rate = 9600
 ```
 
 ---
@@ -271,6 +280,40 @@ debounce_ms = 20
 ```
 
 Published fields: `state` (0.0 / 1.0), `press_count`, `press_duration_ms`.
+
+### SDS011 — PM2.5 / PM10 air quality
+
+Supports two transports.
+
+**USB-serial** — plug the SDS011 in via USB (appears as `/dev/ttyUSB0`).
+If permission is denied: `sudo usermod -aG dialout $USER`.
+
+```toml
+[[sensors]]
+name   = "Air Quality"
+driver = "sds011"
+
+[sensors.connection]
+type      = "serial"
+port      = "/dev/ttyUSB0"
+baud_rate = 9600           # always 9600 for SDS011
+```
+
+**Serial-over-IP (raw TCP)** — e.g. an ESP8266 / ESP32 serial bridge,
+or a serial device server (USR-TCP232, Moxa, etc.).
+
+```toml
+[[sensors]]
+name   = "Air Quality (remote)"
+driver = "sds011"
+
+[sensors.connection]
+type = "tcp"
+host = "192.168.1.42"   # address of the serial bridge
+port = 8880             # raw-TCP port configured on the bridge
+```
+
+Published fields: `pm2_5` (μg/m³), `pm10` (μg/m³), `aqi_pm2_5`, `aqi_pm10` (US EPA index).
 
 ### Synthetic test sensor
 

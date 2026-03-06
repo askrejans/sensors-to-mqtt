@@ -9,7 +9,7 @@
 #   (double-underscore maps to each level of TOML nesting)
 #
 # Supported drivers:
-#   mpu6500 | bmp280 | bme280 | sht31 | bh1750 | ina219 | ads1115 | gpio_button | synthetic
+#   mpu6500 | bmp280 | bme280 | sht31 | bh1750 | ina219 | ads1115 | gpio_button | sds011 | synthetic
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -170,3 +170,25 @@ history_size = 600      # rolling window kept for TUI sparklines
 # rate_hz = 50     # simulated sample rate in Hz
 # speed   = 1.0    # waveform speed multiplier (>1 = faster)
 # noise   = 0.02   # noise amplitude added to each reading
+
+# --- SDS011: PM2.5 / PM10 particulate-matter sensor (USB-serial) ----------
+# [[sensors]]
+# name    = "air_quality"
+# driver  = "sds011"
+# enabled = true
+#
+# [sensors.connection]
+# type      = "serial"
+# port      = "/dev/ttyUSB0"   # or /dev/ttyS0 for built-in UART
+# baud_rate = 9600              # SDS011 always uses 9600; do not change
+
+# --- SDS011 via serial-over-IP (ESP8266 bridge / serial device server) ----
+# [[sensors]]
+# name    = "air_quality_remote"
+# driver  = "sds011"
+# enabled = true
+#
+# [sensors.connection]
+# type = "tcp"
+# host = "192.168.1.42"    # IP of the serial-bridge device
+# port = 8880              # raw-TCP port configured on the bridge

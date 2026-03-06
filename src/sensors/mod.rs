@@ -7,6 +7,8 @@
 pub mod gpio;
 #[cfg(target_os = "linux")]
 pub mod i2c;
+#[cfg(target_os = "linux")]
+pub mod serial;
 pub mod registry;
 pub mod synthetic;
 

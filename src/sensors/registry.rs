@@ -3,7 +3,7 @@
 //! Supported drivers (value of `driver` field in TOML):
 //!
 //! | driver        | connection | crate feature |
-//! |---------------|------------|---------------|
+//! |---------------|------------|--------------|
 //! | `synthetic`   | any        | always        |
 //! | `mpu6500`     | i2c        | linux         |
 //! | `bmp280`      | i2c        | linux         |
@@ -13,6 +13,7 @@
 //! | `ina219`      | i2c        | linux         |
 //! | `ads1115`     | i2c        | linux         |
 //! | `gpio_button` | gpio       | linux         |
+//! | `sds011`      | serial     | linux         |
 
 use super::Sensor;
 use super::synthetic::SyntheticSensor;
@@ -50,9 +51,12 @@ pub fn create_sensor(config: &SensorConfig) -> Result<Box<dyn Sensor>> {
             config,
         )?)),
 
+        #[cfg(target_os = "linux")]
+        "sds011" => Ok(Box::new(super::serial::sds011::Sds011::from_config(config)?)),
+
         other => bail!(
             "Unknown sensor driver: '{}'. Available: synthetic, mpu6500, \
-            bmp280, bme280, sht31, bh1750, ina219, ads1115, gpio_button",
+            bmp280, bme280, sht31, bh1750, ina219, ads1115, gpio_button, sds011",
             other
         ),
     }
