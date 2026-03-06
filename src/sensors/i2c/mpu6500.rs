@@ -79,6 +79,20 @@ fn default_history_size() -> usize {
     600
 }
 
+impl Default for MPU6500Settings {
+    fn default() -> Self {
+        Self {
+            accel_range: default_accel_range(),
+            gyro_range: default_gyro_range(),
+            sample_rate: default_sample_rate(),
+            history_size: default_history_size(),
+            accel_filter: FilterConfig::default(),
+            accel_z_filter: FilterConfig::default(),
+            gyro_filter: FilterConfig::default(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Calibration
 // ---------------------------------------------------------------------------
