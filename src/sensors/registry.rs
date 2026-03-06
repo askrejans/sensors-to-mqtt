@@ -52,7 +52,9 @@ pub fn create_sensor(config: &SensorConfig) -> Result<Box<dyn Sensor>> {
         )?)),
 
         #[cfg(target_os = "linux")]
-        "sds011" => Ok(Box::new(super::serial::sds011::Sds011::from_config(config)?)),
+        "sds011" => Ok(Box::new(super::serial::sds011::Sds011::from_config(
+            config,
+        )?)),
 
         other => bail!(
             "Unknown sensor driver: '{}'. Available: synthetic, mpu6500, \

@@ -18,7 +18,7 @@
 
 #![cfg(target_os = "linux")]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::io::Read;
@@ -210,18 +210,31 @@ impl Sensor for Sds011 {
         fields.insert("aqi_pm2_5".into(), aqi_pm2_5(pm2_5));
         fields.insert("aqi_pm10".into(), aqi_pm10(pm10));
 
-        Ok(SensorData { timestamp: Utc::now(), fields })
+        Ok(SensorData {
+            timestamp: Utc::now(),
+            fields,
+        })
     }
 
-    fn name(&self) -> &str { &self.name }
-    fn driver_name(&self) -> &str { "sds011" }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, enabled: bool) { self.enabled = enabled; }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn driver_name(&self) -> &str {
+        "sds011"
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
     fn recalibrate(&mut self) -> Result<()> {
         self.buf.clear();
         Ok(())
     }
-    fn field_descriptors(&self) -> &[FieldDescriptor] { FIELDS }
+    fn field_descriptors(&self) -> &[FieldDescriptor] {
+        FIELDS
+    }
 }
 
 // ---------------------------------------------------------------------------
