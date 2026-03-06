@@ -3,9 +3,7 @@
 //! These tests exercise multiple modules together without real hardware.
 //! All tests use the `synthetic` driver which has no OS dependencies.
 
-use sensors_to_mqtt::config::{
-    AppConfig, ConnectionConfig, I2cConnectionConfig, SensorConfig,
-};
+use sensors_to_mqtt::config::{AppConfig, ConnectionConfig, I2cConnectionConfig, SensorConfig};
 use sensors_to_mqtt::models::{AppState, SensorHistory};
 use sensors_to_mqtt::sensors::registry::create_sensor;
 

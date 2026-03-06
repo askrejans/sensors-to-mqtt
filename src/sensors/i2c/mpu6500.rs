@@ -465,9 +465,21 @@ impl Sensor for MPU6500 {
         ];
         let az = self.settings.gyro_filter.absolute_zero;
         let raw_gyro: [f64; 3] = [
-            if raw_gyro[0].abs() < az { 0.0 } else { raw_gyro[0] },
-            if raw_gyro[1].abs() < az { 0.0 } else { raw_gyro[1] },
-            if raw_gyro[2].abs() < az { 0.0 } else { raw_gyro[2] },
+            if raw_gyro[0].abs() < az {
+                0.0
+            } else {
+                raw_gyro[0]
+            },
+            if raw_gyro[1].abs() < az {
+                0.0
+            } else {
+                raw_gyro[1]
+            },
+            if raw_gyro[2].abs() < az {
+                0.0
+            } else {
+                raw_gyro[2]
+            },
         ];
         let filt_gyro: [f64; 3] = [
             self.gyro_filters[0].update(raw_gyro[0]),
