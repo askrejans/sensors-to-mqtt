@@ -21,7 +21,7 @@ const CMD_RESET: u8 = 0x07;
 /// Continuously high-resolution mode: 1 lx resolution, 120 ms measurement time
 const CMD_CONT_H_MEAS: u8 = 0x10;
 /// One-time high-resolution mode (for sleeping between reads)
-const CMD_ONCE_H_MEAS: u8 = 0x20;
+const _CMD_ONCE_H_MEAS: u8 = 0x20;
 
 static FIELDS: &[FieldDescriptor] = &[
     FieldDescriptor {

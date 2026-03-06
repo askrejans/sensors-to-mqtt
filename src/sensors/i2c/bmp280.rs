@@ -21,7 +21,7 @@ use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
 // ---------------------------------------------------------------------------
 const REG_ID: u8 = 0xD0;
 const REG_RESET: u8 = 0xE0;
-const REG_STATUS: u8 = 0xF3;
+const _REG_STATUS: u8 = 0xF3;
 const REG_CTRL_MEAS: u8 = 0xF4;
 const REG_CONFIG: u8 = 0xF5;
 const REG_PRESS_MSB: u8 = 0xF7;
