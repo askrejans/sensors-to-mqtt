@@ -1,8 +1,11 @@
 # sensors-to-mqtt
 
-Rust application that reads data from a wide range of sensors (I2C, GPIO, synthetic) and publishes it to an MQTT broker. Includes an interactive terminal UI with live charts, G-force visualisation, and a systemd-ready daemon mode.
+Rust application that reads data from a wide range of sensors (I2C, GPIO) and publishes it to an MQTT broker. Includes an interactive terminal UI with live charts, G-force visualisation, and a systemd-ready daemon mode.
 
-Part of the **to-mqtt** ecosystem — see also `gps-to-mqtt` and `speeduino-to-mqtt`.
+Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.com/askrejans/gps-to-mqtt) and [`speeduino-to-mqtt`](https://github.com/askrejans/speeduino-to-mqtt).
+
+![sensors](https://github.com/user-attachments/assets/835dcf36-17c0-42ce-aec8-379e9177f768)
+
 
 ## Features
 
@@ -443,3 +446,4 @@ cargo check
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
