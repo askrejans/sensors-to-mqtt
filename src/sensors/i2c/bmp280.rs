@@ -225,10 +225,9 @@ impl Sensor for Bmp280 {
     }
 
     fn read(&mut self) -> Result<SensorData> {
-        let calib = self
-            .calib
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("BMP280 not initialised"))?;
+        if self.calib.is_none() {
+            anyhow::bail!("BMP280 not initialised");
+        }
 
         // Read 6 bytes: press MSB…LSB+xlsb, temp MSB…xlsb
         let mut raw = [0u8; 6];
@@ -237,6 +236,7 @@ impl Sensor for Bmp280 {
         let adc_p = (raw[0] as i32) << 12 | (raw[1] as i32) << 4 | (raw[2] as i32) >> 4;
         let adc_t = (raw[3] as i32) << 12 | (raw[4] as i32) << 4 | (raw[5] as i32) >> 4;
 
+        let calib = self.calib.as_ref().unwrap();
         let (temperature, t_fine) = calib.compensate_temperature(adc_t);
         let pressure = calib.compensate_pressure(adc_p, t_fine);
         let altitude =

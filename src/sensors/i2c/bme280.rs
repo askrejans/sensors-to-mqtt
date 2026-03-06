@@ -264,10 +264,9 @@ impl Sensor for Bme280 {
     }
 
     fn read(&mut self) -> Result<SensorData> {
-        let calib = self
-            .calib
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("BME280 not initialised — call init() first"))?;
+        if self.calib.is_none() {
+            anyhow::bail!("BME280 not initialised — call init() first");
+        }
 
         let mut raw = [0u8; 8];
         self.read_regs(REG_PRESS_MSB, &mut raw)?;
@@ -276,6 +275,7 @@ impl Sensor for Bme280 {
         let adc_t = (raw[3] as i32) << 12 | (raw[4] as i32) << 4 | (raw[5] as i32) >> 4;
         let adc_h = (raw[6] as i32) << 8 | raw[7] as i32;
 
+        let calib = self.calib.as_ref().unwrap();
         let (temperature, t_fine) = calib.comp_temp(adc_t);
         let pressure = calib.comp_press(adc_p, t_fine);
         let humidity = calib.comp_humid(adc_h, t_fine);

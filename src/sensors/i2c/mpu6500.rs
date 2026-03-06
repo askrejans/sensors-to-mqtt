@@ -13,7 +13,7 @@ use linux_embedded_hal::I2cdev;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::config::{ConnectionConfig, I2cConnectionConfig, SensorConfig};
+use crate::config::{ConnectionConfig, SensorConfig};
 use crate::filters::kalman_1d::KalmanFilter1D;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
 
@@ -115,23 +115,20 @@ pub struct MPU6500 {
 impl MPU6500 {
     /// Construct from `SensorConfig` using the new config model.
     pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
-        let (bus, address) = match &cfg.connection {
-            ConnectionConfig::I2c(I2cConnectionConfig { bus, address }) => {
-                (bus.clone(), *address as u8)
-            }
-            other => anyhow::bail!(
-                "MPU6500 requires an I2C connection, got {}",
-                other.connection_type_str()
-            ),
+        let (device, address) = match &cfg.connection {
+            ConnectionConfig::I2c(c) => (c.device.clone(), c.address as u8),
+            _ => anyhow::bail!("MPU6500 requires an I2C connection"),
         };
 
         let settings: MPU6500Settings = cfg
             .settings
-            .clone()
-            .try_into()
-            .map_err(|e: toml::de::Error| anyhow::anyhow!("MPU6500 settings: {}", e))?;
+            .as_ref()
+            .map(|v| v.clone().try_into())
+            .transpose()
+            .map_err(|e: toml::de::Error| anyhow::anyhow!("MPU6500 settings: {}", e))?
+            .unwrap_or_default();
 
-        let i2c = I2cdev::new(&bus).context("Failed to open I2C device")?;
+        let i2c = I2cdev::new(&device).context("Failed to open I2C device")?;
 
         let accel_filters = Self::build_accel_filters(&settings);
         let linear_filters = Self::build_linear_filters(&settings);
