@@ -96,7 +96,7 @@ impl Default for MPU6500Settings {
                 process_noise: 0.001,
                 measurement_noise: 0.1,
                 dead_zone: 1.0,
-                absolute_zero: 1.0,
+                absolute_zero: 2.0,
             },
         }
     }
@@ -462,6 +462,12 @@ impl Sensor for MPU6500 {
             (raw[3] as i32 - self.calibration.gyro_offsets[0]) as f64 / g_scale,
             (raw[4] as i32 - self.calibration.gyro_offsets[1]) as f64 / g_scale,
             (raw[5] as i32 - self.calibration.gyro_offsets[2]) as f64 / g_scale,
+        ];
+        let az = self.settings.gyro_filter.absolute_zero;
+        let raw_gyro: [f64; 3] = [
+            if raw_gyro[0].abs() < az { 0.0 } else { raw_gyro[0] },
+            if raw_gyro[1].abs() < az { 0.0 } else { raw_gyro[1] },
+            if raw_gyro[2].abs() < az { 0.0 } else { raw_gyro[2] },
         ];
         let filt_gyro: [f64; 3] = [
             self.gyro_filters[0].update(raw_gyro[0]),
