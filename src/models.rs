@@ -256,13 +256,13 @@ mod tests {
     #[test]
     fn test_appstate_new_mqtt_disabled() {
         let s = AppState::new("localhost:1883".into(), false, 100);
-        assert_eq!(s.mqtt_status, MqttStatus::Disabled);
+        assert_eq!(*s.mqtt_status.read().unwrap(), MqttStatus::Disabled);
     }
 
     #[test]
     fn test_appstate_new_mqtt_enabled() {
         let s = AppState::new("localhost:1883".into(), true, 100);
-        assert_eq!(s.mqtt_status, MqttStatus::Connecting);
+        assert_eq!(*s.mqtt_status.read().unwrap(), MqttStatus::Connecting);
     }
 
     #[test]
