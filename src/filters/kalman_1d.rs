@@ -12,6 +12,8 @@ pub struct KalmanFilter1D {
     initialized: bool,
     dead_zone: f64,
     last_output: f64,
+    /// Clamp output to 0.0 when |output| is below this threshold
+    absolute_zero: f64,
 }
 
 impl KalmanFilter1D {
@@ -25,12 +27,18 @@ impl KalmanFilter1D {
             initialized: false,
             dead_zone: 0.01,
             last_output: 0.0,
+            absolute_zero: 0.0,
         }
     }
 
     // New: Allow configuring dead zone threshold
     pub fn with_dead_zone(mut self, threshold: f64) -> Self {
         self.dead_zone = threshold;
+        self
+    }
+
+    pub fn with_absolute_zero(mut self, threshold: f64) -> Self {
+        self.absolute_zero = threshold;
         self
     }
 
@@ -68,6 +76,9 @@ impl KalmanFilter1D {
         };
 
         self.last_output = output;
+        if self.absolute_zero > 0.0 && output.abs() < self.absolute_zero {
+            return 0.0;
+        }
         output
     }
 

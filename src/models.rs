@@ -113,7 +113,7 @@ pub struct AppState {
     pub sensor_statuses: HashMap<String, SensorStatus>,
     pub sensor_data: HashMap<String, SensorData>,
     pub sensor_history: HashMap<String, SensorHistory>,
-    pub mqtt_status: MqttStatus,
+    pub mqtt_status: Arc<std::sync::RwLock<MqttStatus>>,
     pub messages_published: Arc<AtomicU64>,
     pub mqtt_address: String,
     pub mqtt_enabled: bool,
@@ -128,11 +128,11 @@ impl AppState {
             sensor_statuses: HashMap::new(),
             sensor_data: HashMap::new(),
             sensor_history: HashMap::new(),
-            mqtt_status: if mqtt_enabled {
+            mqtt_status: Arc::new(std::sync::RwLock::new(if mqtt_enabled {
                 MqttStatus::Connecting
             } else {
                 MqttStatus::Disabled
-            },
+            })),
             messages_published: Arc::new(AtomicU64::new(0)),
             mqtt_address,
             mqtt_enabled,

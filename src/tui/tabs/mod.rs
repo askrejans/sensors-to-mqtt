@@ -75,7 +75,7 @@ impl StateSnapshot {
             sensor_statuses,
             sensor_data,
             sensor_history,
-            mqtt_status: s.mqtt_status.clone(),
+            mqtt_status: s.mqtt_status.read().unwrap().clone(),
             messages_published: s.messages_published.load(Ordering::Relaxed),
             mqtt_address: s.mqtt_address.clone(),
             mqtt_enabled: s.mqtt_enabled,

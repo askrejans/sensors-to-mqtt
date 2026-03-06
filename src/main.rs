@@ -109,6 +109,8 @@ async fn main() -> Result<()> {
         register_sensors(&mut s, &cfg.sensors);
         if let Some(ref h) = mqtt_handle {
             s.messages_published = Arc::clone(&h.counter);
+            // Share the exact same Arc so TUI always reflects live MQTT state
+            s.mqtt_status = Arc::clone(&h.status);
         }
     }
 

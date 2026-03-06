@@ -36,6 +36,9 @@ pub struct FilterConfig {
     pub process_noise: f64,
     pub measurement_noise: f64,
     pub dead_zone: f64,
+    /// Clamp output to 0 when |value| < this (removes standing-still drift)
+    #[serde(default)]
+    pub absolute_zero: f64,
 }
 
 impl Default for FilterConfig {
@@ -44,6 +47,7 @@ impl Default for FilterConfig {
             process_noise: 0.00001,
             measurement_noise: 0.05,
             dead_zone: 0.005,
+            absolute_zero: 0.0,
         }
     }
 }
@@ -88,7 +92,12 @@ impl Default for MPU6500Settings {
             history_size: default_history_size(),
             accel_filter: FilterConfig::default(),
             accel_z_filter: FilterConfig::default(),
-            gyro_filter: FilterConfig::default(),
+            gyro_filter: FilterConfig {
+                process_noise: 0.001,
+                measurement_noise: 0.1,
+                dead_zone: 1.0,
+                absolute_zero: 1.0,
+            },
         }
     }
 }
@@ -191,9 +200,15 @@ impl MPU6500 {
     fn build_gyro_filters(s: &MPU6500Settings) -> [KalmanFilter1D; 3] {
         let g = &s.gyro_filter;
         [
-            KalmanFilter1D::new(g.process_noise, g.measurement_noise).with_dead_zone(g.dead_zone),
-            KalmanFilter1D::new(g.process_noise, g.measurement_noise).with_dead_zone(g.dead_zone),
-            KalmanFilter1D::new(g.process_noise, g.measurement_noise).with_dead_zone(g.dead_zone),
+            KalmanFilter1D::new(g.process_noise, g.measurement_noise)
+                .with_dead_zone(g.dead_zone)
+                .with_absolute_zero(g.absolute_zero),
+            KalmanFilter1D::new(g.process_noise, g.measurement_noise)
+                .with_dead_zone(g.dead_zone)
+                .with_absolute_zero(g.absolute_zero),
+            KalmanFilter1D::new(g.process_noise, g.measurement_noise)
+                .with_dead_zone(g.dead_zone)
+                .with_absolute_zero(g.absolute_zero),
         ]
     }
 

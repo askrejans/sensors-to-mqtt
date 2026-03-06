@@ -6,7 +6,7 @@
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -47,7 +47,7 @@ impl MqttHandle {
     }
 
     pub async fn is_connected(&self) -> bool {
-        self.status.read().await.is_connected()
+        self.status.read().unwrap().is_connected()
     }
 }
 
@@ -89,15 +89,15 @@ async fn run_event_loop(mut evl: EventLoop, status: Arc<RwLock<MqttStatus>>) {
         match evl.poll().await {
             Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                 info!("MQTT connected");
-                *status.write().await = MqttStatus::Connected;
+                *status.write().unwrap() = MqttStatus::Connected;
             }
             Ok(Event::Incoming(Incoming::Disconnect)) => {
                 warn!("MQTT disconnected");
-                *status.write().await = MqttStatus::Disconnected;
+                *status.write().unwrap() = MqttStatus::Disconnected;
             }
             Err(e) => {
                 error!("MQTT error: {}", e);
-                *status.write().await = MqttStatus::Error(e.to_string());
+                *status.write().unwrap() = MqttStatus::Error(e.to_string());
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
             _ => {}
