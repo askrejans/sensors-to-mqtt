@@ -36,6 +36,7 @@ fn tcp_sensor_config(name: &str, driver: &str, host: &str, port: u16, address: u
             host: host.to_string(),
             port,
             address: Some(address),
+            framing: false,
         }),
         settings: None,
     }
@@ -243,6 +244,7 @@ fn test_gpio_button_tcp_fails_without_server() {
             host: "127.0.0.1".to_string(),
             port: 19999,
             address: None,
+            framing: false,
         }),
         settings: None,
     };
@@ -447,6 +449,69 @@ port = 8880
     let pm = cfg.sensors.iter().find(|s| s.driver == "sds011").unwrap();
     match &pm.connection {
         ConnectionConfig::Tcp(t) => assert_eq!(t.address, None),
+        other => panic!("expected Tcp, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TCP framing config option
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tcp_framing_defaults_to_false() {
+    use sensors_to_mqtt::config::load_configuration;
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    write!(
+        f,
+        r#"
+[[sensors]]
+name    = "Remote IMU"
+driver  = "mpu6500"
+enabled = true
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.1.1"
+port    = 9002
+address = 0x68
+"#
+    )
+    .unwrap();
+
+    let cfg = load_configuration(Some(f.path().to_str().unwrap())).unwrap();
+    match &cfg.sensors[0].connection {
+        ConnectionConfig::Tcp(t) => assert!(!t.framing, "framing should default to false"),
+        other => panic!("expected Tcp, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_tcp_framing_can_be_enabled() {
+    use sensors_to_mqtt::config::load_configuration;
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    write!(
+        f,
+        r#"
+[[sensors]]
+name    = "Remote IMU"
+driver  = "mpu6500"
+enabled = true
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.1.1"
+port    = 9002
+address = 0x68
+framing = true
+"#
+    )
+    .unwrap();
+
+    let cfg = load_configuration(Some(f.path().to_str().unwrap())).unwrap();
+    match &cfg.sensors[0].connection {
+        ConnectionConfig::Tcp(t) => assert!(t.framing, "framing should be true when set"),
         other => panic!("expected Tcp, got {:?}", other),
     }
 }

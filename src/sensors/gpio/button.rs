@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::config::{ConnectionConfig, SensorConfig};
+use crate::transport::tcp_read_framed;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,7 @@ enum Transport {
     },
     Tcp {
         stream: std::net::TcpStream,
+        framing: bool,
     },
 }
 
@@ -76,15 +78,20 @@ impl Transport {
                     std::fs::read_to_string(value_path).context("reading GPIO sysfs value")?;
                 Ok(s.trim() == "1")
             }
-            Transport::Tcp { stream } => {
+            Transport::Tcp { stream, framing } => {
                 use std::io::{Read, Write};
                 stream
                     .write_all(&[0x01])
                     .context("GPIO-over-TCP: poll request failed")?;
                 let mut buf = [0u8; 1];
-                stream
-                    .read_exact(&mut buf)
-                    .context("GPIO-over-TCP: poll response failed")?;
+                if *framing {
+                    tcp_read_framed(stream, &mut buf)
+                        .context("GPIO-over-TCP: poll response failed")?;
+                } else {
+                    stream
+                        .read_exact(&mut buf)
+                        .context("GPIO-over-TCP: poll response failed")?;
+                }
                 Ok(buf[0] != 0)
             }
         }
@@ -156,7 +163,7 @@ impl GpioButton {
                     .context("Failed to set TCP write timeout")?;
                 Ok(Self {
                     name: cfg.name.clone(),
-                    transport: Transport::Tcp { stream },
+                    transport: Transport::Tcp { stream, framing: t.framing },
                     active_low: false,
                     debounce_ms: 50,
                     enabled: cfg.enabled,

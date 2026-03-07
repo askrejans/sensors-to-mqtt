@@ -141,6 +141,9 @@ host    = "192.168.88.58"   # IP of the io-to-net bridge device
 port    = 9002              # port configured on the bridge
 address = 0x68              # I2C device address (required for I2C sensors)
                             # omit for serial-over-TCP sensors (e.g. sds011)
+framing = true              # set true when the bridge sends length-prefixed frames
+                            # (2-byte big-endian length header before each response)
+                            # default: false (raw byte stream)
 ```
 
 **GPIO** (Linux only — sysfs)
@@ -187,8 +190,13 @@ driver = "mpu6500"
 type    = "tcp"
 host    = "192.168.88.58"
 port    = 9002
-address = 0x68   # MPU-6500 default I2C address
+framing = true   # required when bridge uses frame_mode = "length_prefix"
+# address is not needed — the bridge handles I2C addressing internally
 ```
+
+> **Bridge config note:** set `read_len = 14` and `read_reg = 0x3B` in the io-to-net bridge.
+> The driver reads all six axes in a single 14-byte burst (ACCEL_XYZ + TEMP + GYRO_XYZ).
+> Client writes are ignored by the bridge when `read_only = true`.
 
 ### BME280 — temperature, pressure, humidity
 

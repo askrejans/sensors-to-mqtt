@@ -307,21 +307,16 @@ impl MPU6500 {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn read_register_i16(&mut self, reg: u8) -> Result<i16> {
-        let mut buf = [0u8; 2];
-        self.device.write_read(self.address, &[reg], &mut buf)?;
-        Ok(i16::from_be_bytes(buf))
-    }
-
+    /// Read all 14 bytes in one transaction (ACCEL_XYZ + TEMP + GYRO_XYZ).
+    ///
+    /// For local I2C this is a sequential burst read from register 0x3B —
+    /// the MPU-6500 auto-increments the register pointer.
+    /// For TCP (io-to-net) the write is discarded by the bridge (`read_only`)
+    /// and the bridge returns its pre-read frame — `read_len` must be 14.
     fn read_raw_6(&mut self) -> Result<[i16; 6]> {
-        Ok([
-            self.read_register_i16(ACCEL_XOUT_H)?,
-            self.read_register_i16(ACCEL_XOUT_H + 2)?,
-            self.read_register_i16(ACCEL_XOUT_H + 4)?,
-            self.read_register_i16(GYRO_XOUT_H)?,
-            self.read_register_i16(GYRO_XOUT_H + 2)?,
-            self.read_register_i16(GYRO_XOUT_H + 4)?,
-        ])
+        let mut buf = [0u8; 14];
+        self.device.write_read(self.address, &[ACCEL_XOUT_H], &mut buf)?;
+        Ok(parse_sensor_frame(&buf))
     }
 
     fn accel_scale(&self) -> f64 {
@@ -564,5 +559,99 @@ impl Sensor for MPU6500 {
 
     fn field_descriptors(&self) -> &[FieldDescriptor] {
         &self.descriptors
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame parsing (shared by driver and tests)
+// ---------------------------------------------------------------------------
+
+/// Parse a 14-byte MPU-6500 sensor frame into [AX, AY, AZ, GX, GY, GZ].
+///
+/// Layout (matches register map from 0x3B):
+/// ```text
+/// [0..1]  ACCEL_XOUT  [2..3]  ACCEL_YOUT  [4..5]  ACCEL_ZOUT
+/// [6..7]  TEMP_OUT    (skipped)
+/// [8..9]  GYRO_XOUT   [10..11] GYRO_YOUT  [12..13] GYRO_ZOUT
+/// ```
+fn parse_sensor_frame(buf: &[u8; 14]) -> [i16; 6] {
+    [
+        i16::from_be_bytes([buf[0], buf[1]]),   // ACCEL_XOUT
+        i16::from_be_bytes([buf[2], buf[3]]),   // ACCEL_YOUT
+        i16::from_be_bytes([buf[4], buf[5]]),   // ACCEL_ZOUT
+        i16::from_be_bytes([buf[8], buf[9]]),   // GYRO_XOUT
+        i16::from_be_bytes([buf[10], buf[11]]), // GYRO_YOUT
+        i16::from_be_bytes([buf[12], buf[13]]), // GYRO_ZOUT
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_sensor_frame_zeros() {
+        let buf = [0u8; 14];
+        let out = parse_sensor_frame(&buf);
+        assert_eq!(out, [0i16; 6]);
+    }
+
+    #[test]
+    fn test_parse_sensor_frame_known_values() {
+        // ACCEL: X=0x0102, Y=0x0304, Z=0x0506
+        // TEMP:  0x0708  (ignored)
+        // GYRO:  X=0x090A, Y=0x0B0C, Z=0x0D0E
+        let buf: [u8; 14] = [
+            0x01, 0x02, // AX
+            0x03, 0x04, // AY
+            0x05, 0x06, // AZ
+            0x07, 0x08, // TEMP (skipped)
+            0x09, 0x0A, // GX
+            0x0B, 0x0C, // GY
+            0x0D, 0x0E, // GZ
+        ];
+        let out = parse_sensor_frame(&buf);
+        assert_eq!(out[0], 0x0102); // AX
+        assert_eq!(out[1], 0x0304); // AY
+        assert_eq!(out[2], 0x0506); // AZ
+        assert_eq!(out[3], 0x090A); // GX
+        assert_eq!(out[4], 0x0B0C); // GY
+        assert_eq!(out[5], 0x0D0E); // GZ
+    }
+
+    #[test]
+    fn test_parse_sensor_frame_negative_values() {
+        // i16::MIN = 0x8000, i16::MAX = 0x7FFF
+        let buf: [u8; 14] = [
+            0x80, 0x00, // AX = i16::MIN
+            0x7F, 0xFF, // AY = i16::MAX
+            0xFF, 0xFF, // AZ = -1
+            0x00, 0x00, // TEMP (skipped)
+            0x80, 0x00, // GX = i16::MIN
+            0x00, 0x01, // GY = 1
+            0xFF, 0xFE, // GZ = -2
+        ];
+        let out = parse_sensor_frame(&buf);
+        assert_eq!(out[0], i16::MIN);
+        assert_eq!(out[1], i16::MAX);
+        assert_eq!(out[2], -1);
+        assert_eq!(out[3], i16::MIN);
+        assert_eq!(out[4], 1);
+        assert_eq!(out[5], -2);
+    }
+
+    #[test]
+    fn test_parse_sensor_frame_temp_bytes_ignored() {
+        let mut buf = [0u8; 14];
+        // Set TEMP bytes to non-zero — output must be unaffected
+        buf[6] = 0xFF;
+        buf[7] = 0xFF;
+        let out = parse_sensor_frame(&buf);
+        // Only TEMP is non-zero; all six axes should still be 0
+        assert_eq!(out, [0i16; 6]);
     }
 }

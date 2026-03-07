@@ -24,6 +24,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use crate::config::{ConnectionConfig, SensorConfig};
+use crate::transport::FramedTcpReader;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
 
 // ---------------------------------------------------------------------------
@@ -96,7 +97,11 @@ impl Sds011 {
                 stream
                     .set_read_timeout(Some(Duration::from_millis(2000)))
                     .context("Failed to set TCP read timeout")?;
-                Box::new(stream)
+                if c.framing {
+                    Box::new(FramedTcpReader::new(stream))
+                } else {
+                    Box::new(stream)
+                }
             }
             _ => bail!("SDS011 requires a 'serial' or 'tcp' connection"),
         };

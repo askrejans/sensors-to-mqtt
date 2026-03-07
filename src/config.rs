@@ -143,6 +143,11 @@ pub struct TcpConnectionConfig {
     /// I2C device address on the remote bridge (e.g. 0x68 for MPU-6500).
     /// Only required when the driver communicates with an I2C sensor via TCP.
     pub address: Option<u16>,
+    /// When `true`, every response from the server is prefixed with a 2-byte
+    /// big-endian payload length.  Set this to match the bridge configuration.
+    /// Defaults to `false` (raw byte stream).
+    #[serde(default)]
+    pub framing: bool,
 }
 
 fn default_tcp_port() -> u16 {
@@ -281,6 +286,7 @@ mod tests {
             host: "192.168.1.100".into(),
             port: 3000,
             address: None,
+            framing: false,
         });
         assert!(c.to_display().contains("3000"));
     }

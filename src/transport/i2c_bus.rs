@@ -1,25 +1,28 @@
 //! I2C bus abstraction supporting local hardware and TCP bridges.
 //!
-//! # TCP wire protocol (compatible with io-to-net transparent bridge)
+//! # TCP wire protocol — length-prefixed framing (io-to-net)
 //!
-//! Each operation is a request/response exchange:
+//! The bridge wraps every I2C read response in a 2-byte big-endian length
+//! header so the client can consume exactly one complete response per
+//! receive call without relying on TCP segment boundaries.
+//!
+//! The I2C device address is configured **on the bridge side** (e.g.
+//! `i2c:///dev/i2c-1@0x68`), so the TCP client never sends an address byte.
 //!
 //! ## Write
 //! ```text
-//! TX: [0x01][i2c_addr:1][len:1][data:len]
-//! RX: [0x00] = ok  |  [0x01] = error
+//! TX: [register][value...]            (forwarded to the I2C device as-is)
+//! ```
+//!
+//! ## Write-Read (most common for sensor registers)
+//! ```text
+//! TX: [register_addr]                 (sets the sensor's internal register pointer)
+//! RX: [len_hi][len_lo][data...]       (2-byte BE length + payload)
 //! ```
 //!
 //! ## Read
 //! ```text
-//! TX: [0x02][i2c_addr:1][len:1]
-//! RX: [0x00][data:len] = ok  |  [0x01] = error
-//! ```
-//!
-//! ## Write-Read
-//! ```text
-//! TX: [0x03][i2c_addr:1][write_len:1][read_len:1][write_data:write_len]
-//! RX: [0x00][read_data:read_len] = ok  |  [0x01] = error
+//! RX: [len_hi][len_lo][data...]       (2-byte BE length + payload)
 //! ```
 
 use anyhow::{bail, Context, Result};
@@ -28,12 +31,16 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use crate::config::{ConnectionConfig, SensorConfig};
+use crate::transport::framing::tcp_read_framed;
 
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
 
 /// Minimal I2C bus abstraction, compatible with both local hardware and TCP.
+///
+/// For the TCP implementation (`TcpI2c`), the `addr` parameter is **ignored**
+/// because the I2C device address is fixed in the io-to-net bridge config.
 pub trait I2cBus: Send {
     fn write(&mut self, addr: u8, data: &[u8]) -> Result<()>;
     fn read(&mut self, addr: u8, buf: &mut [u8]) -> Result<()>;
@@ -41,72 +48,62 @@ pub trait I2cBus: Send {
 }
 
 // ---------------------------------------------------------------------------
-// TCP transport
+// TCP transport — transparent bridge client
 // ---------------------------------------------------------------------------
 
 pub struct TcpI2c {
     stream: TcpStream,
+    framing: bool,
 }
 
 impl TcpI2c {
-    pub fn connect(host: &str, port: u16) -> Result<Self> {
+    pub fn connect(host: &str, port: u16, framing: bool) -> Result<Self> {
         let addr = format!("{}:{}", host, port);
         let stream = TcpStream::connect(&addr)
-            .with_context(|| format!("Failed to connect to I2C-over-TCP bridge at {}", addr))?;
+            .with_context(|| format!("Failed to connect to io-to-net bridge at {}", addr))?;
         stream
             .set_read_timeout(Some(Duration::from_millis(2000)))
             .context("Failed to set TCP read timeout")?;
         stream
             .set_write_timeout(Some(Duration::from_millis(2000)))
             .context("Failed to set TCP write timeout")?;
-        Ok(Self { stream })
-    }
-
-    fn recv_status(&mut self) -> Result<()> {
-        let mut status = [0u8; 1];
-        self.stream
-            .read_exact(&mut status)
-            .context("I2C-over-TCP: no status byte from bridge")?;
-        if status[0] != 0x00 {
-            bail!("I2C-over-TCP bridge returned error status {:#04x}", status[0]);
-        }
-        Ok(())
+        Ok(Self { stream, framing })
     }
 }
 
 impl I2cBus for TcpI2c {
-    fn write(&mut self, addr: u8, data: &[u8]) -> Result<()> {
-        let mut req = vec![0x01, addr, data.len() as u8];
-        req.extend_from_slice(data);
+    /// Write bytes to the I2C device via the transparent bridge.
+    /// `addr` is ignored — the bridge has the device address configured.
+    fn write(&mut self, _addr: u8, data: &[u8]) -> Result<()> {
         self.stream
-            .write_all(&req)
-            .context("I2C-over-TCP: write request failed")?;
-        self.recv_status()
+            .write_all(data)
+            .context("TCP bridge: write failed")
     }
 
-    fn read(&mut self, addr: u8, buf: &mut [u8]) -> Result<()> {
-        let req = [0x02, addr, buf.len() as u8];
-        self.stream
-            .write_all(&req)
-            .context("I2C-over-TCP: read request failed")?;
-        self.recv_status()?;
-        self.stream
-            .read_exact(buf)
-            .context("I2C-over-TCP: read data failed")?;
-        Ok(())
+    /// Read bytes from the I2C device via the bridge.
+    /// `addr` is ignored — the bridge has the device address configured.
+    fn read(&mut self, _addr: u8, buf: &mut [u8]) -> Result<()> {
+        if self.framing {
+            tcp_read_framed(&mut self.stream, buf).context("TCP bridge: read failed")
+        } else {
+            self.stream.read_exact(buf).context("TCP bridge: read failed")
+        }
     }
 
-    fn write_read(&mut self, addr: u8, write: &[u8], read: &mut [u8]) -> Result<()> {
-        let mut req = vec![0x03, addr, write.len() as u8, read.len() as u8];
-        req.extend_from_slice(write);
+    /// Write register address, then read the sensor response.
+    /// `addr` is ignored — the bridge has the device address configured.
+    fn write_read(&mut self, _addr: u8, write: &[u8], read: &mut [u8]) -> Result<()> {
         self.stream
-            .write_all(&req)
-            .context("I2C-over-TCP: write_read request failed")?;
-        self.recv_status()?;
-        self.stream
-            .read_exact(read)
-            .context("I2C-over-TCP: write_read data failed")?;
-        Ok(())
+            .write_all(write)
+            .context("TCP bridge: write_read (write) failed")?;
+        if self.framing {
+            tcp_read_framed(&mut self.stream, read)
+                .context("TCP bridge: write_read (read) failed")
+        } else {
+            self.stream
+                .read_exact(read)
+                .context("TCP bridge: write_read (read) failed")
+        }
     }
 }
 
@@ -171,7 +168,7 @@ pub fn open_i2c(cfg: &SensorConfig, default_address: u8) -> Result<(Box<dyn I2cB
         }
         ConnectionConfig::Tcp(c) => {
             let addr = c.address.map(|a| a as u8).unwrap_or(default_address);
-            let bus = TcpI2c::connect(&c.host, c.port)?;
+            let bus = TcpI2c::connect(&c.host, c.port, c.framing)?;
             Ok((Box::new(bus), addr))
         }
         other => bail!(
