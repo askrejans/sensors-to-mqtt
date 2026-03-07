@@ -22,7 +22,6 @@ const SMPLRT_DIV: u8 = 0x19;
 const ACCEL_CONFIG: u8 = 0x1C;
 const GYRO_CONFIG: u8 = 0x1B;
 const ACCEL_XOUT_H: u8 = 0x3B;
-const GYRO_XOUT_H: u8 = 0x43;
 
 // ---------------------------------------------------------------------------
 // Settings (deserialised from config.toml [sensors.settings])
