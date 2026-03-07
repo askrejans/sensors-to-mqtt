@@ -1,21 +1,18 @@
-//! MPU6500 6-axis IMU driver (Linux only — requires linux-embedded-hal).
+//! MPU6500 6-axis IMU driver (I2C / TCP).
 //!
 //! Provides calibrated, Kalman-filtered accelerometer and gyroscope data.
 //! Extra derived quantities: combined_g, tilt_angle, angular_velocity_magnitude,
 //! and a rolling peak_g (cleared on recalibrate).
 
-#![cfg(target_os = "linux")]
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
-use embedded_hal::i2c::I2c;
-use linux_embedded_hal::I2cdev;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::config::{ConnectionConfig, SensorConfig};
+use crate::config::SensorConfig;
 use crate::filters::kalman_1d::KalmanFilter1D;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+use crate::transport::{open_i2c, I2cBus};
 
 // ---------------------------------------------------------------------------
 // Register map
@@ -117,7 +114,7 @@ struct CalibrationData {
 // ---------------------------------------------------------------------------
 
 pub struct MPU6500 {
-    i2c: I2cdev,
+    device: Box<dyn I2cBus>,
     address: u8,
     sensor_name: String,
     enabled: bool,
@@ -138,11 +135,6 @@ pub struct MPU6500 {
 impl MPU6500 {
     /// Construct from `SensorConfig` using the new config model.
     pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
-        let (device, address) = match &cfg.connection {
-            ConnectionConfig::I2c(c) => (c.device.clone(), c.address as u8),
-            _ => anyhow::bail!("MPU6500 requires an I2C connection"),
-        };
-
         let settings: MPU6500Settings = cfg
             .settings
             .as_ref()
@@ -151,7 +143,7 @@ impl MPU6500 {
             .map_err(|e: toml::de::Error| anyhow::anyhow!("MPU6500 settings: {}", e))?
             .unwrap_or_default();
 
-        let i2c = I2cdev::new(&device).context("Failed to open I2C device")?;
+        let (device, address) = open_i2c(cfg, 0x68)?;
 
         let accel_filters = Self::build_accel_filters(&settings);
         let linear_filters = Self::build_linear_filters(&settings);
@@ -159,7 +151,7 @@ impl MPU6500 {
         let descriptors = Self::build_descriptors();
 
         let mut sensor = Self {
-            i2c,
+            device,
             address,
             sensor_name: cfg.name.clone(),
             enabled: cfg.enabled,
@@ -317,7 +309,7 @@ impl MPU6500 {
 
     fn read_register_i16(&mut self, reg: u8) -> Result<i16> {
         let mut buf = [0u8; 2];
-        self.i2c.write_read(self.address, &[reg], &mut buf)?;
+        self.device.write_read(self.address, &[reg], &mut buf)?;
         Ok(i16::from_be_bytes(buf))
     }
 
@@ -404,10 +396,10 @@ impl MPU6500 {
 impl Sensor for MPU6500 {
     fn init(&mut self) -> Result<()> {
         // Wake up
-        self.i2c.write(self.address, &[PWR_MGMT_1, 0x00])?;
+        self.device.write(self.address, &[PWR_MGMT_1, 0x00])?;
         // Sample rate divider
         let div = ((1000u32 / self.settings.sample_rate as u32).saturating_sub(1)) as u8;
-        self.i2c.write(self.address, &[SMPLRT_DIV, div])?;
+        self.device.write(self.address, &[SMPLRT_DIV, div])?;
         // Accel config
         let accel_cfg: u8 = match self.settings.accel_range {
             2 => 0x00,
@@ -416,7 +408,7 @@ impl Sensor for MPU6500 {
             16 => 0x18,
             _ => 0x18,
         };
-        self.i2c.write(self.address, &[ACCEL_CONFIG, accel_cfg])?;
+        self.device.write(self.address, &[ACCEL_CONFIG, accel_cfg])?;
         // Gyro config
         let gyro_cfg: u8 = match self.settings.gyro_range {
             250 => 0x00,
@@ -425,7 +417,7 @@ impl Sensor for MPU6500 {
             2000 => 0x18,
             _ => 0x18,
         };
-        self.i2c.write(self.address, &[GYRO_CONFIG, gyro_cfg])?;
+        self.device.write(self.address, &[GYRO_CONFIG, gyro_cfg])?;
         Ok(())
     }
 

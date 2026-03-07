@@ -1,6 +1,6 @@
 [package]
 name = "sensors-to-mqtt"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -46,13 +46,11 @@ thiserror = "2.0.18"
 # Serialisation / data
 serde_json = "1.0.149"
 chrono = { version = "0.4.44", features = ["serde"] }
-
+serialport = "4.8.1"
 # I2C hardware drivers — Linux/Android only
 [target.'cfg(target_os = "linux")'.dependencies]
 i2cdev = "0.6"
 linux-embedded-hal = "0.4"
-serialport = "4.8.1"
-
 [dev-dependencies]
 mockall = "0.14"
 tempfile = "3.26.0"

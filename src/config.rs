@@ -140,6 +140,9 @@ pub struct TcpConnectionConfig {
     pub host: String,
     #[serde(default = "default_tcp_port")]
     pub port: u16,
+    /// I2C device address on the remote bridge (e.g. 0x68 for MPU-6500).
+    /// Only required when the driver communicates with an I2C sensor via TCP.
+    pub address: Option<u16>,
 }
 
 fn default_tcp_port() -> u16 {
@@ -277,6 +280,7 @@ mod tests {
         let c = ConnectionConfig::Tcp(TcpConnectionConfig {
             host: "192.168.1.100".into(),
             port: 3000,
+            address: None,
         });
         assert!(c.to_display().contains("3000"));
     }

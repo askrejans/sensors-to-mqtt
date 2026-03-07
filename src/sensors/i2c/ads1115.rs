@@ -1,4 +1,4 @@
-//! ADS1115 — 4-channel 16-bit precision ADC (I2C, Linux only).
+//! ADS1115 — 4-channel 16-bit precision ADC (I2C / TCP).
 //! Texas Instruments ADS1115 datasheet SBAS444E.
 //!
 //! Default address: 0x48 (ADDR→GND). Addresses: 0x48, 0x49, 0x4A, 0x4B.
@@ -28,17 +28,14 @@
 //! offset = 0.0
 //! ```
 
-#![cfg(target_os = "linux")]
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
-use embedded_hal::i2c::I2c;
-use linux_embedded_hal::I2cdev;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::config::{ConnectionConfig, SensorConfig};
+use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+use crate::transport::{open_i2c, I2cBus};
 
 // Registers
 const REG_CONVERSION: u8 = 0x00;
@@ -130,7 +127,7 @@ impl Default for Ads1115Settings {
 
 pub struct Ads1115 {
     name: String,
-    device: I2cdev,
+    device: Box<dyn I2cBus>,
     address: u8,
     settings: Ads1115Settings,
     enabled: bool,
@@ -143,25 +140,21 @@ pub struct Ads1115 {
 
 impl Ads1115 {
     pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
-        let conn = match &cfg.connection {
-            ConnectionConfig::I2c(c) => c.clone(),
-            _ => anyhow::bail!("ADS1115 requires an I2C connection"),
-        };
         let settings: Ads1115Settings = cfg
             .settings
             .as_ref()
             .map(|v| v.clone().try_into())
             .transpose()?
             .unwrap_or_default();
-        let device = I2cdev::new(&conn.device).context("opening I2C device for ADS1115")?;
 
         let (pga_bits, fsr_v) = pga_for(settings.gain);
         let dr_bits = dr_for(settings.sample_rate);
+        let (device, address) = open_i2c(cfg, 0x48)?;
 
         Ok(Self {
             name: cfg.name.clone(),
             device,
-            address: conn.address as u8,
+            address,
             settings,
             enabled: cfg.enabled,
             fsr_v,

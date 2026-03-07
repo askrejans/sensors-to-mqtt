@@ -5,10 +5,8 @@
 //!   2. Add a match arm in `registry::create_sensor`
 
 pub mod gpio;
-#[cfg(target_os = "linux")]
 pub mod i2c;
 pub mod registry;
-#[cfg(target_os = "linux")]
 pub mod serial;
 pub mod synthetic;
 

@@ -3,7 +3,10 @@
 //! These tests exercise multiple modules together without real hardware.
 //! All tests use the `synthetic` driver which has no OS dependencies.
 
-use sensors_to_mqtt::config::{AppConfig, ConnectionConfig, I2cConnectionConfig, SensorConfig};
+use sensors_to_mqtt::config::{
+    AppConfig, ConnectionConfig, GpioConnectionConfig, I2cConnectionConfig, SensorConfig,
+    SerialConnectionConfig, TcpConnectionConfig,
+};
 use sensors_to_mqtt::models::{AppState, SensorHistory};
 use sensors_to_mqtt::sensors::registry::create_sensor;
 
@@ -19,6 +22,20 @@ fn synthetic_sensor_config(name: &str) -> SensorConfig {
         connection: ConnectionConfig::I2c(I2cConnectionConfig {
             device: "/dev/i2c-1".to_string(),
             address: 0x68,
+        }),
+        settings: None,
+    }
+}
+
+fn tcp_sensor_config(name: &str, driver: &str, host: &str, port: u16, address: u16) -> SensorConfig {
+    SensorConfig {
+        name: name.to_string(),
+        enabled: true,
+        driver: driver.to_string(),
+        connection: ConnectionConfig::Tcp(TcpConnectionConfig {
+            host: host.to_string(),
+            port,
+            address: Some(address),
         }),
         settings: None,
     }
@@ -44,6 +61,193 @@ fn test_registry_rejects_unknown_driver() {
     assert!(result.is_err());
     let msg = result.err().unwrap().to_string();
     assert!(msg.contains("nonexistent_driver_xyz"));
+}
+
+// ---------------------------------------------------------------------------
+// TCP connection config
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tcp_config_parses_with_address() {
+    use sensors_to_mqtt::config::load_configuration;
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    write!(
+        f,
+        r#"
+[[sensors]]
+name    = "Remote IMU"
+driver  = "mpu6500"
+enabled = true
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.88.58"
+port    = 9002
+address = 0x68
+"#
+    )
+    .unwrap();
+
+    let cfg = load_configuration(Some(f.path().to_str().unwrap())).unwrap();
+    assert_eq!(cfg.sensors.len(), 1);
+    let sensor = &cfg.sensors[0];
+    assert_eq!(sensor.driver, "mpu6500");
+    match &sensor.connection {
+        ConnectionConfig::Tcp(t) => {
+            assert_eq!(t.host, "192.168.88.58");
+            assert_eq!(t.port, 9002);
+            assert_eq!(t.address, Some(0x68));
+        }
+        other => panic!("expected Tcp connection, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_tcp_config_address_is_optional() {
+    use sensors_to_mqtt::config::load_configuration;
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    write!(
+        f,
+        r#"
+[[sensors]]
+name    = "Air Quality"
+driver  = "sds011"
+enabled = true
+[sensors.connection]
+type = "tcp"
+host = "192.168.1.1"
+port = 8880
+"#
+    )
+    .unwrap();
+
+    let cfg = load_configuration(Some(f.path().to_str().unwrap())).unwrap();
+    match &cfg.sensors[0].connection {
+        ConnectionConfig::Tcp(t) => {
+            assert_eq!(t.address, None); // not required for serial-over-TCP
+        }
+        other => panic!("expected Tcp connection, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// open_i2c — connection type validation (no hardware needed)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_open_i2c_rejects_serial_connection() {
+    use sensors_to_mqtt::transport::open_i2c;
+
+    let cfg = SensorConfig {
+        name: "bad".to_string(),
+        enabled: true,
+        driver: "bmp280".to_string(),
+        connection: ConnectionConfig::Serial(SerialConnectionConfig {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 9600,
+        }),
+        settings: None,
+    };
+    let result = open_i2c(&cfg, 0x76);
+    assert!(result.is_err());
+    let msg = result.err().unwrap().to_string();
+    assert!(msg.contains("serial"), "unexpected error: {}", msg);
+}
+
+#[test]
+fn test_open_i2c_rejects_gpio_connection() {
+    use sensors_to_mqtt::transport::open_i2c;
+
+    let cfg = SensorConfig {
+        name: "bad".to_string(),
+        enabled: true,
+        driver: "bmp280".to_string(),
+        connection: ConnectionConfig::Gpio(GpioConnectionConfig {
+            pin: 17,
+            active_low: false,
+            debounce_ms: 50,
+        }),
+        settings: None,
+    };
+    let result = open_i2c(&cfg, 0x76);
+    assert!(result.is_err());
+    let msg = result.err().unwrap().to_string();
+    assert!(msg.contains("gpio"), "unexpected error: {}", msg);
+}
+
+#[test]
+fn test_open_i2c_tcp_fails_without_server() {
+    use sensors_to_mqtt::transport::open_i2c;
+
+    // TCP connection to a non-existent server should fail at connect time,
+    // not silently succeed — this validates the correct TCP code path is taken.
+    let cfg = tcp_sensor_config("imu", "mpu6500", "127.0.0.1", 19999, 0x68);
+    let result = open_i2c(&cfg, 0x68);
+    assert!(result.is_err(), "expected connection failure to unreachable server");
+}
+
+// ---------------------------------------------------------------------------
+// GPIO button — connection type validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_gpio_button_rejects_i2c_connection() {
+    use sensors_to_mqtt::sensors::gpio::button::GpioButton;
+
+    let cfg = SensorConfig {
+        name: "bad".to_string(),
+        enabled: true,
+        driver: "gpio_button".to_string(),
+        connection: ConnectionConfig::I2c(I2cConnectionConfig {
+            device: "/dev/i2c-1".to_string(),
+            address: 0x40,
+        }),
+        settings: None,
+    };
+    let result = GpioButton::from_config(&cfg);
+    assert!(result.is_err());
+    let msg = result.err().unwrap().to_string();
+    assert!(msg.contains("i2c"), "unexpected error: {}", msg);
+}
+
+#[test]
+fn test_gpio_button_rejects_serial_connection() {
+    use sensors_to_mqtt::sensors::gpio::button::GpioButton;
+
+    let cfg = SensorConfig {
+        name: "bad".to_string(),
+        enabled: true,
+        driver: "gpio_button".to_string(),
+        connection: ConnectionConfig::Serial(SerialConnectionConfig {
+            port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 9600,
+        }),
+        settings: None,
+    };
+    let result = GpioButton::from_config(&cfg);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_gpio_button_tcp_fails_without_server() {
+    use sensors_to_mqtt::sensors::gpio::button::GpioButton;
+
+    let cfg = SensorConfig {
+        name: "brake".to_string(),
+        enabled: true,
+        driver: "gpio_button".to_string(),
+        connection: ConnectionConfig::Tcp(TcpConnectionConfig {
+            host: "127.0.0.1".to_string(),
+            port: 19999,
+            address: None,
+        }),
+        settings: None,
+    };
+    let result = GpioButton::from_config(&cfg);
+    assert!(result.is_err(), "expected connection failure to unreachable server");
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +370,84 @@ debounce_ms = 30
             assert_eq!(g.debounce_ms, 30);
         }
         other => panic!("expected Gpio connection, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_config_load_tcp_sensors() {
+    use sensors_to_mqtt::config::load_configuration;
+    use std::io::Write;
+
+    let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+    write!(
+        f,
+        r#"
+[[sensors]]
+name    = "Remote IMU"
+driver  = "mpu6500"
+enabled = true
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.88.58"
+port    = 9002
+address = 0x68
+
+[[sensors]]
+name    = "Remote Env"
+driver  = "bme280"
+enabled = true
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.88.58"
+port    = 9003
+address = 0x76
+
+[[sensors]]
+name    = "Remote Button"
+driver  = "gpio_button"
+enabled = true
+[sensors.connection]
+type = "tcp"
+host = "192.168.88.58"
+port = 9004
+
+[[sensors]]
+name    = "Air Quality"
+driver  = "sds011"
+enabled = true
+[sensors.connection]
+type = "tcp"
+host = "192.168.88.58"
+port = 8880
+"#
+    )
+    .unwrap();
+
+    let cfg = load_configuration(Some(f.path().to_str().unwrap())).unwrap();
+    assert_eq!(cfg.sensors.len(), 4);
+
+    // All drivers should be recognisable (no unknown driver errors at config level)
+    let names: Vec<&str> = cfg.sensors.iter().map(|s| s.driver.as_str()).collect();
+    assert!(names.contains(&"mpu6500"));
+    assert!(names.contains(&"bme280"));
+    assert!(names.contains(&"gpio_button"));
+    assert!(names.contains(&"sds011"));
+
+    // Check TCP with I2C address
+    let imu = cfg.sensors.iter().find(|s| s.driver == "mpu6500").unwrap();
+    match &imu.connection {
+        ConnectionConfig::Tcp(t) => {
+            assert_eq!(t.address, Some(0x68));
+            assert_eq!(t.port, 9002);
+        }
+        other => panic!("expected Tcp, got {:?}", other),
+    }
+
+    // Check TCP without address (sds011 uses raw serial stream)
+    let pm = cfg.sensors.iter().find(|s| s.driver == "sds011").unwrap();
+    match &pm.connection {
+        ConnectionConfig::Tcp(t) => assert_eq!(t.address, None),
+        other => panic!("expected Tcp, got {:?}", other),
     }
 }
 

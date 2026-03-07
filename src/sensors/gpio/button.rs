@@ -1,4 +1,8 @@
-//! GPIO button / switch sensor (Linux only, via sysfs /sys/class/gpio).
+//! GPIO button / switch sensor.
+//!
+//! Supports two transports:
+//! - **Local sysfs GPIO** (Linux only, via `/sys/class/gpio`)
+//! - **TCP bridge** (all platforms, via io-to-net or compatible bridge)
 //!
 //! Each instance monitors a single GPIO pin and reports:
 //!
@@ -8,32 +12,18 @@
 //! | `press_count`    | edge count since start (rising if active-high) |
 //! | `press_duration_ms` | how long the pin has been in its current state |
 //!
-//! Configuration in `config.toml`:
-//! ```toml
-//! [[sensors]]
-//! name        = "Brake Switch"
-//! driver      = "gpio_button"
-//! enabled     = true
+//! ## TCP wire protocol
 //!
-//! [sensors.connection]
-//! type        = "gpio"
-//! pin         = 17
-//! active_low  = false   # true = LOW means button pressed
-//! debounce_ms = 50
-//! ```
-//!
-//! The driver exports the GPIO via sysfs on `init()` and unexports on drop.
-
-#![cfg(target_os = "linux")]
+//! Polling mode: client sends `[0x01]`, server responds with `[0x00]` (low)
+//! or `[0x01]` (high). The `active_low` and `debounce_ms` fields are applied
+//! in software on the client side.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::config::{ConnectionConfig, GpioConnectionConfig, SensorConfig};
+use crate::config::{ConnectionConfig, SensorConfig};
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
 
 // ---------------------------------------------------------------------------
@@ -62,14 +52,55 @@ static FIELDS: &[FieldDescriptor] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+enum Transport {
+    #[cfg(target_os = "linux")]
+    Sysfs {
+        value_path: std::path::PathBuf,
+        pin: u32,
+    },
+    Tcp {
+        stream: std::net::TcpStream,
+    },
+}
+
+impl Transport {
+    /// Read the raw pin level (before active_low inversion).
+    fn read_level(&mut self) -> Result<bool> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Transport::Sysfs { value_path, .. } => {
+                let s =
+                    std::fs::read_to_string(value_path).context("reading GPIO sysfs value")?;
+                Ok(s.trim() == "1")
+            }
+            Transport::Tcp { stream } => {
+                use std::io::{Read, Write};
+                stream
+                    .write_all(&[0x01])
+                    .context("GPIO-over-TCP: poll request failed")?;
+                let mut buf = [0u8; 1];
+                stream
+                    .read_exact(&mut buf)
+                    .context("GPIO-over-TCP: poll response failed")?;
+                Ok(buf[0] != 0)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
 
 pub struct GpioButton {
     name: String,
-    cfg: GpioConnectionConfig,
+    transport: Transport,
+    active_low: bool,
+    debounce_ms: u64,
     enabled: bool,
-    value_path: PathBuf,
 
     last_state: Option<bool>,
     debounce_until: Option<Instant>,
@@ -80,70 +111,114 @@ pub struct GpioButton {
 
 impl GpioButton {
     pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
-        let gpio_cfg = match &cfg.connection {
-            ConnectionConfig::Gpio(g) => g.clone(),
-            _ => anyhow::bail!("gpio_button requires a GPIO connection"),
-        };
-        let value_path = PathBuf::from(format!("/sys/class/gpio/gpio{}/value", gpio_cfg.pin));
-        Ok(Self {
-            name: cfg.name.clone(),
-            cfg: gpio_cfg,
-            enabled: cfg.enabled,
-            value_path,
-            last_state: None,
-            debounce_until: None,
-            stable_state: false,
-            press_count: 0,
-            state_entered: Instant::now(),
-        })
-    }
-
-    /// Export GPIO and configure as input via sysfs.
-    fn export_gpio(&self) -> Result<()> {
-        let pin_str = self.cfg.pin.to_string();
-
-        // Export if not already exported
-        if !self.value_path.exists() {
-            fs::write("/sys/class/gpio/export", &pin_str).context("exporting GPIO pin")?;
-            // Kernel may need a moment to create the directory
-            let deadline = Instant::now() + Duration::from_millis(500);
-            while !self.value_path.exists() {
-                if Instant::now() > deadline {
-                    anyhow::bail!(
-                        "GPIO{} sysfs entry did not appear after export",
-                        self.cfg.pin
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(20));
+        match &cfg.connection {
+            #[cfg(target_os = "linux")]
+            ConnectionConfig::Gpio(g) => {
+                let value_path = std::path::PathBuf::from(format!(
+                    "/sys/class/gpio/gpio{}/value",
+                    g.pin
+                ));
+                Ok(Self {
+                    name: cfg.name.clone(),
+                    transport: Transport::Sysfs {
+                        value_path,
+                        pin: g.pin,
+                    },
+                    active_low: g.active_low,
+                    debounce_ms: g.debounce_ms,
+                    enabled: cfg.enabled,
+                    last_state: None,
+                    debounce_until: None,
+                    stable_state: false,
+                    press_count: 0,
+                    state_entered: Instant::now(),
+                })
             }
+
+            #[cfg(not(target_os = "linux"))]
+            ConnectionConfig::Gpio(_) => {
+                anyhow::bail!(
+                    "Local GPIO (type = \"gpio\") is only supported on Linux. \
+                     Use type = \"tcp\" to connect via an io-to-net bridge."
+                )
+            }
+
+            ConnectionConfig::Tcp(t) => {
+                use std::net::TcpStream;
+                let addr = format!("{}:{}", t.host, t.port);
+                let stream = TcpStream::connect(&addr)
+                    .with_context(|| format!("Failed to connect to GPIO bridge at {}", addr))?;
+                stream
+                    .set_read_timeout(Some(Duration::from_millis(2000)))
+                    .context("Failed to set TCP read timeout")?;
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(2000)))
+                    .context("Failed to set TCP write timeout")?;
+                Ok(Self {
+                    name: cfg.name.clone(),
+                    transport: Transport::Tcp { stream },
+                    active_low: false,
+                    debounce_ms: 50,
+                    enabled: cfg.enabled,
+                    last_state: None,
+                    debounce_until: None,
+                    stable_state: false,
+                    press_count: 0,
+                    state_entered: Instant::now(),
+                })
+            }
+
+            other => anyhow::bail!(
+                "gpio_button requires a 'gpio' or 'tcp' connection, got '{}'",
+                match other {
+                    ConnectionConfig::I2c(_) => "i2c",
+                    ConnectionConfig::Serial(_) => "serial",
+                    _ => "unknown",
+                }
+            ),
         }
-
-        // Direction
-        let dir_path = format!("/sys/class/gpio/gpio{}/direction", self.cfg.pin);
-        fs::write(&dir_path, "in").context("setting GPIO direction to 'in'")?;
-
-        // Active-low polarity
-        let al_path = format!("/sys/class/gpio/gpio{}/active_low", self.cfg.pin);
-        fs::write(&al_path, if self.cfg.active_low { "1" } else { "0" }).ok(); // not fatal if not supported
-        Ok(())
     }
 
-    fn read_raw(&self) -> Result<bool> {
-        let s = fs::read_to_string(&self.value_path).context("reading GPIO value")?;
-        Ok(s.trim() == "1")
+    fn read_raw(&mut self) -> Result<bool> {
+        let level = self.transport.read_level()?;
+        Ok(if self.active_low { !level } else { level })
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for GpioButton {
     fn drop(&mut self) {
-        // Best-effort unexport; ignore errors
-        let _ = fs::write("/sys/class/gpio/unexport", self.cfg.pin.to_string());
+        if let Transport::Sysfs { pin, .. } = &self.transport {
+            let _ = std::fs::write("/sys/class/gpio/unexport", pin.to_string());
+        }
     }
 }
 
 impl Sensor for GpioButton {
     fn init(&mut self) -> Result<()> {
-        self.export_gpio()?;
+        #[cfg(target_os = "linux")]
+        if let Transport::Sysfs { value_path, pin } = &self.transport {
+            let pin_str = pin.to_string();
+            if !value_path.exists() {
+                std::fs::write("/sys/class/gpio/export", &pin_str)
+                    .context("exporting GPIO pin")?;
+                let deadline = Instant::now() + Duration::from_millis(500);
+                while !value_path.exists() {
+                    if Instant::now() > deadline {
+                        anyhow::bail!(
+                            "GPIO{} sysfs entry did not appear after export",
+                            pin
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            let dir_path = format!("/sys/class/gpio/gpio{}/direction", pin);
+            std::fs::write(&dir_path, "in").context("setting GPIO direction to 'in'")?;
+            let al_path = format!("/sys/class/gpio/gpio{}/active_low", pin);
+            std::fs::write(&al_path, if self.active_low { "1" } else { "0" }).ok();
+        }
+
         self.stable_state = self.read_raw()?;
         self.last_state = Some(self.stable_state);
         self.state_entered = Instant::now();
@@ -152,12 +227,10 @@ impl Sensor for GpioButton {
 
     fn read(&mut self) -> Result<SensorData> {
         let raw = self.read_raw()?;
-        let debounce = Duration::from_millis(self.cfg.debounce_ms);
+        let debounce = Duration::from_millis(self.debounce_ms);
         let now = Instant::now();
 
-        // Debounce state machine
         if Some(raw) != self.last_state {
-            // Edge detected — start/restart debounce timer
             self.debounce_until = Some(now + debounce);
             self.last_state = Some(raw);
         }
@@ -166,10 +239,9 @@ impl Sensor for GpioButton {
             if now >= until {
                 self.debounce_until = None;
                 if raw != self.stable_state {
-                    // Stable transition
                     if raw {
                         self.press_count += 1;
-                    } // count rising edges
+                    }
                     self.stable_state = raw;
                     self.state_entered = now;
                 }

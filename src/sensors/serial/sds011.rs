@@ -1,8 +1,8 @@
 //! SDS011 laser PM2.5 / PM10 particulate-matter sensor (Nova Fitness).
 //!
 //! Supports two transports:
-//! - **USB-serial** (e.g. `/dev/ttyUSB0`) via `type = "serial"`
-//! - **Serial-over-IP / raw TCP** (e.g. an ESP8266 bridge) via `type = "tcp"`
+//! - **USB-serial** (e.g. `/dev/ttyUSB0`) via `type = "serial"` (Linux / macOS)
+//! - **Serial-over-IP / raw TCP** (e.g. an io-to-net bridge) via `type = "tcp"`
 //!
 //! The sensor outputs a 10-byte binary frame continuously at ~1 Hz:
 //!
@@ -15,8 +15,6 @@
 //! ```
 //!
 //! Configure with `driver = "sds011"` in `settings.toml`.
-
-#![cfg(target_os = "linux")]
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;

@@ -1,6 +1,6 @@
 # sensors-to-mqtt
 
-Rust application that reads data from a wide range of sensors (I2C, GPIO) and publishes it to an MQTT broker. Includes an interactive terminal UI with live charts, G-force visualisation, and a systemd-ready daemon mode.
+Rust application that reads data from a wide range of sensors (I2C, GPIO, serial) and publishes it to an MQTT broker. Sensors can be connected **locally** (Linux hardware interfaces) or **remotely over TCP** via an [io-to-net](https://github.com/askrejans/io-to-net) bridge — enabling monitoring from any platform including macOS and Windows. Includes an interactive terminal UI with live charts, G-force visualisation, and a systemd-ready daemon mode.
 
 Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.com/askrejans/gps-to-mqtt) and [`speeduino-to-mqtt`](https://github.com/askrejans/speeduino-to-mqtt).
 
@@ -9,7 +9,8 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 
 ## Features
 
-- **Broad sensor support** — I2C environmental, power, motion, light, and ADC sensors; GPIO digital inputs; a synthetic test sensor (no hardware required)
+- **Broad sensor support** — I2C environmental, power, motion, light, and ADC sensors; GPIO digital inputs; particulate matter (PM2.5/PM10); a synthetic test sensor (no hardware required)
+- **TCP bridge support** — connect to any sensor remotely via an [io-to-net](https://github.com/askrejans/io-to-net) bridge; all drivers work cross-platform over TCP
 - **Real-time MQTT publishing** with automatic reconnection and QoS configuration
 - **1-D Kalman filter** on numeric fields with configurable noise/process variance and dead-zone suppression
 - **Interactive terminal UI** — tabbed per-sensor views, live sparkline charts, G-meter canvas, keyboard navigation
@@ -23,17 +24,18 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 
 | Driver | Bus | Chip | Measurements |
 |---|---|---|---|
-| `mpu6500` | I2C | InvenSense MPU-6500 | Acceleration (g), gyroscope (°/s), temperature |
-| `bmp280` | I2C | Bosch BMP280 | Temperature (°C), pressure (hPa) |
-| `bme280` | I2C | Bosch BME280 | Temperature (°C), pressure (hPa), humidity (%) |
-| `sht31` | I2C | Sensirion SHT31 | Temperature (°C), humidity (%) |
-| `bh1750` | I2C | ROHM BH1750 | Ambient light (lux), light category |
-| `ina219` | I2C | TI INA219 | Bus voltage (V), shunt voltage (mV), current (A), power (W), state-of-charge (%) |
-| `ads1115` | I2C | TI ADS1115 | 4-channel 16-bit ADC — configurable per-channel gain, sample rate, and linear scaling |
-| `gpio_button` | GPIO | — | State (0/1), press count, press duration; software debounce |
-| `sds011` | Serial (USB) or TCP | Nova Fitness SDS011 | PM2.5 (μg/m³), PM10 (μg/m³), AQI (EPA) |
+| `mpu6500` | I2C / TCP | InvenSense MPU-6500 | Acceleration (g), gyroscope (°/s), tilt/lean/bank angles |
+| `bmp280` | I2C / TCP | Bosch BMP280 | Temperature (°C), pressure (hPa), altitude (m) |
+| `bme280` | I2C / TCP | Bosch BME280 | Temperature (°C), pressure (hPa), humidity (%), altitude (m) |
+| `sht31` | I2C / TCP | Sensirion SHT31 | Temperature (°C), humidity (%) |
+| `bh1750` | I2C / TCP | ROHM BH1750 | Ambient light (lux), light category |
+| `ina219` | I2C / TCP | TI INA219 | Bus voltage (V), shunt voltage (mV), current (A), power (W), state-of-charge (%) |
+| `ads1115` | I2C / TCP | TI ADS1115 | 4-channel 16-bit ADC — configurable per-channel gain, sample rate, and linear scaling |
+| `gpio_button` | GPIO / TCP | — | State (0/1), press count, press duration; software debounce |
+| `sds011` | Serial / TCP | Nova Fitness SDS011 | PM2.5 (μg/m³), PM10 (μg/m³), AQI (EPA) |
 | `synthetic` | — | — | 15 simulated fields (g-force, gyro, temperature, pressure, humidity, battery, RPM, speed, throttle); sine/sawtooth waveforms |
 
+> **I2C / TCP** — local hardware on Linux, or remote via TCP bridge on any platform.
 > GPS and ECU (Speeduino) are handled by dedicated sibling projects.
 
 ---
@@ -43,7 +45,8 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 ### Requirements
 
 - Rust 1.82+ (`rustup.rs`)
-- On Linux target: I2C enabled (`raspi-config` → Interface Options → I2C) and user in the `i2c` group
+- **Local sensors (Linux):** I2C enabled (`raspi-config` → Interface Options → I2C), user in the `i2c` group
+- **Remote sensors (all platforms):** [io-to-net](https://github.com/askrejans/io-to-net) bridge running on the device with the sensors
 
 ### Build and run (native)
 
@@ -122,7 +125,7 @@ enabled = true          # set false to skip without removing the block
 
 ### Connection types
 
-**I2C**
+**I2C** (Linux only — direct hardware)
 ```toml
 [sensors.connection]
 type    = "i2c"
@@ -130,7 +133,17 @@ device  = "/dev/i2c-1"   # default
 address = 0x68           # 7-bit hex address
 ```
 
-**GPIO** (digital input / button / switch)
+**TCP** (all platforms — connects to an [io-to-net](https://github.com/askrejans/io-to-net) bridge)
+```toml
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.88.58"   # IP of the io-to-net bridge device
+port    = 9002              # port configured on the bridge
+address = 0x68              # I2C device address (required for I2C sensors)
+                            # omit for serial-over-TCP sensors (e.g. sds011)
+```
+
+**GPIO** (Linux only — sysfs)
 ```toml
 [sensors.connection]
 type        = "gpio"
@@ -139,11 +152,11 @@ active_low  = false       # true = LOW means pressed/active
 debounce_ms = 50          # software debounce window
 ```
 
-**Serial** (USB or UART)
+**Serial** (Linux / macOS — USB or UART)
 ```toml
 [sensors.connection]
 type      = "serial"
-port      = "/dev/ttyUSB0"   # or /dev/ttyS0, /dev/ttyAMA0, etc.
+port      = "/dev/ttyUSB0"   # or /dev/ttyS0, /dev/ttyAMA0, COM3, etc.
 baud_rate = 9600
 ```
 
@@ -151,7 +164,7 @@ baud_rate = 9600
 
 ## Sensor Configuration Examples
 
-### MPU-6500 IMU
+### MPU-6500 IMU — local I2C
 
 ```toml
 [[sensors]]
@@ -163,6 +176,20 @@ type    = "i2c"
 address = 0x68
 ```
 
+### MPU-6500 IMU — remote TCP bridge
+
+```toml
+[[sensors]]
+name   = "Front IMU"
+driver = "mpu6500"
+
+[sensors.connection]
+type    = "tcp"
+host    = "192.168.88.58"
+port    = 9002
+address = 0x68   # MPU-6500 default I2C address
+```
+
 ### BME280 — temperature, pressure, humidity
 
 ```toml
@@ -171,7 +198,9 @@ name   = "Cabin Climate"
 driver = "bme280"
 
 [sensors.connection]
-type    = "i2c"
+type    = "tcp"
+host    = "192.168.88.58"
+port    = 9003
 address = 0x76
 ```
 
@@ -219,7 +248,9 @@ name   = "Battery Monitor"
 driver = "ina219"
 
 [sensors.connection]
-type    = "i2c"
+type    = "tcp"
+host    = "192.168.88.58"
+port    = 9004
 address = 0x40
 
 [sensors.settings]
@@ -243,8 +274,8 @@ type    = "i2c"
 address = 0x48    # 0x48–0x4B depending on ADDR pin
 
 [sensors.settings]
-gain        = "pga_4_096v"   # ±4.096 V full-scale
-sample_rate = "sps_128"
+gain        = 4.096   # PGA full-scale range (V): 6.144|4.096|2.048|1.024|0.512|0.256
+sample_rate = 128     # SPS: 8|16|32|64|128|250|475|860
 
 [[sensors.settings.channels]]
 index  = 0
@@ -261,11 +292,7 @@ scale  = 100.0
 offset = -1.0
 ```
 
-**Gain options:** `pga_6_144v` · `pga_4_096v` · `pga_2_048v` (default) · `pga_1_024v` · `pga_0_512v` · `pga_0_256v`
-
-**Sample-rate options:** `sps_8` · `sps_16` · `sps_32` · `sps_64` · `sps_128` (default) · `sps_250` · `sps_475` · `sps_860`
-
-### GPIO button / switch
+### GPIO button / switch — local
 
 ```toml
 [[sensors]]
@@ -277,6 +304,19 @@ type        = "gpio"
 pin         = 17
 active_low  = false
 debounce_ms = 20
+```
+
+### GPIO button / switch — remote TCP
+
+```toml
+[[sensors]]
+name   = "Brake Light Switch"
+driver = "gpio_button"
+
+[sensors.connection]
+type = "tcp"
+host = "192.168.88.58"
+port = 9005
 ```
 
 Published fields: `state` (0.0 / 1.0), `press_count`, `press_duration_ms`.
@@ -299,8 +339,7 @@ port      = "/dev/ttyUSB0"
 baud_rate = 9600           # always 9600 for SDS011
 ```
 
-**Serial-over-IP (raw TCP)** — e.g. an ESP8266 / ESP32 serial bridge,
-or a serial device server (USR-TCP232, Moxa, etc.).
+**Serial-over-IP (raw TCP)** — e.g. an io-to-net bridge, ESP8266 / ESP32, or a serial device server.
 
 ```toml
 [[sensors]]
@@ -309,7 +348,7 @@ driver = "sds011"
 
 [sensors.connection]
 type = "tcp"
-host = "192.168.1.42"   # address of the serial bridge
+host = "192.168.1.42"   # address of the bridge
 port = 8880             # raw-TCP port configured on the bridge
 ```
 
@@ -331,6 +370,19 @@ rate_hz = 50     # simulated sample rate
 speed   = 1.0    # waveform speed multiplier
 noise   = 0.02   # noise amplitude
 ```
+
+---
+
+## TCP Bridge Setup (io-to-net)
+
+To use sensors remotely, run [io-to-net](https://github.com/askrejans/io-to-net) on the device that has the sensors physically connected (e.g. a Raspberry Pi):
+
+```bash
+# Install and configure io-to-net on the sensor host
+# Then point sensors-to-mqtt at it from any machine
+```
+
+Each sensor gets its own TCP port in the bridge config. The I2C `address` field in `sensors-to-mqtt` tells the bridge which device on the bus to talk to.
 
 ---
 
@@ -441,11 +493,12 @@ Packages are written to `./dist/`.
 
 ## Adding a New Sensor Driver
 
-1. Create `src/sensors/i2c/<driver>.rs` (or `src/sensors/gpio/<driver>.rs`)
+1. Create `src/sensors/i2c/<driver>.rs` (or `src/sensors/gpio/<driver>.rs`, `src/sensors/serial/<driver>.rs`)
 2. Implement the `Sensor` trait — `init()`, `read()`, `field_descriptors()`
-3. Add `#[cfg(target_os = "linux")] pub mod <driver>;` in the appropriate `mod.rs`
-4. Add a match arm in `src/sensors/registry.rs`
-5. Write inline unit tests in the driver file
+3. For I2C drivers, use `open_i2c(cfg, default_address)` from `crate::transport` to get a `Box<dyn I2cBus>` — this gives local I2C on Linux and TCP on all platforms automatically
+4. Add `pub mod <driver>;` in the appropriate `mod.rs`
+5. Add a match arm in `src/sensors/registry.rs`
+6. Write inline unit tests in the driver file
 
 The TUI renders fields automatically based on the `VizType` in each `FieldDescriptor`:
 
@@ -489,4 +542,3 @@ cargo check
 ## License
 
 MIT — see [LICENSE](LICENSE).
-

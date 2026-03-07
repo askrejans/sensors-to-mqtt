@@ -9,4 +9,5 @@ pub mod models;
 pub mod mqtt_handler;
 pub mod sensors;
 pub mod service;
+pub mod transport;
 pub mod tui;

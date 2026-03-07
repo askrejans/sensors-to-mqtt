@@ -1,4 +1,3 @@
-//! GPIO sensor drivers (Linux only — uses Linux character device / sysfs GPIO).
+//! GPIO sensor drivers (local sysfs on Linux, or TCP bridge on all platforms).
 
-#[cfg(target_os = "linux")]
 pub mod button;

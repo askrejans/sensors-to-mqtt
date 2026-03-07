@@ -1,19 +1,16 @@
-//! SHT31 — high-accuracy temperature + relative humidity (I2C, Linux only).
+//! SHT31 — high-accuracy temperature + relative humidity (I2C / TCP).
 //! Sensirion SHT3x-DIS datasheet V5.
 //!
 //! Default address: 0x44 (ADDR pin low), 0x45 (ADDR pin high).
 //! Uses one-shot mode with high repeatability.
 
-#![cfg(target_os = "linux")]
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
-use embedded_hal::i2c::I2c;
-use linux_embedded_hal::I2cdev;
 use std::collections::HashMap;
 
-use crate::config::{ConnectionConfig, SensorConfig};
+use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+use crate::transport::{open_i2c, I2cBus};
 
 // One-shot, high repeatability, clock-stretching disabled
 const CMD_MEAS: [u8; 2] = [0x24, 0x00];
@@ -51,22 +48,18 @@ fn crc8(data: &[u8]) -> u8 {
 
 pub struct Sht31 {
     name: String,
-    device: I2cdev,
+    device: Box<dyn I2cBus>,
     address: u8,
     enabled: bool,
 }
 
 impl Sht31 {
     pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
-        let conn = match &cfg.connection {
-            ConnectionConfig::I2c(c) => c.clone(),
-            _ => anyhow::bail!("SHT31 requires an I2C connection"),
-        };
-        let device = I2cdev::new(&conn.device).context("opening I2C device for SHT31")?;
+        let (device, address) = open_i2c(cfg, 0x44)?;
         Ok(Self {
             name: cfg.name.clone(),
             device,
-            address: conn.address as u8,
+            address,
             enabled: cfg.enabled,
         })
     }

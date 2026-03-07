@@ -1,4 +1,4 @@
-//! INA219 — bi-directional current / power monitor (I2C, Linux only).
+//! INA219 — bi-directional current / power monitor (I2C / TCP).
 //! Texas Instruments INA219 datasheet SBOS448G.
 //!
 //! Default address: 0x40.  Measures bus voltage, shunt voltage, current,
@@ -8,17 +8,14 @@
 //! Derived field: `state_of_charge_pct` when battery_min_v / battery_max_v
 //! are provided.
 
-#![cfg(target_os = "linux")]
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
-use embedded_hal::i2c::I2c;
-use linux_embedded_hal::I2cdev;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::config::{ConnectionConfig, SensorConfig};
+use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+use crate::transport::{open_i2c, I2cBus};
 
 // Register addresses
 const REG_CONFIGURATION: u8 = 0x00;
@@ -110,7 +107,7 @@ static FIELDS: &[FieldDescriptor] = &[
 
 pub struct Ina219 {
     name: String,
-    device: I2cdev,
+    device: Box<dyn I2cBus>,
     address: u8,
     settings: Ina219Settings,
     enabled: bool,
@@ -119,21 +116,17 @@ pub struct Ina219 {
 
 impl Ina219 {
     pub fn from_config(cfg: &SensorConfig) -> Result<Self> {
-        let conn = match &cfg.connection {
-            ConnectionConfig::I2c(c) => c.clone(),
-            _ => anyhow::bail!("INA219 requires an I2C connection"),
-        };
         let settings: Ina219Settings = cfg
             .settings
             .as_ref()
             .map(|v| v.clone().try_into())
             .transpose()?
             .unwrap_or_default();
-        let device = I2cdev::new(&conn.device).context("opening I2C device for INA219")?;
+        let (device, address) = open_i2c(cfg, 0x40)?;
         Ok(Self {
             name: cfg.name.clone(),
             device,
-            address: conn.address as u8,
+            address,
             settings,
             enabled: cfg.enabled,
             current_lsb: 0.0,
