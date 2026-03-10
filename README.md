@@ -18,6 +18,9 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 - **Daemon mode** — auto-detected when stdout is not a TTY; structured JSON logs, systemd-compatible
 - **TOML configuration** with environment-variable overrides (`SENSORS_TO_MQTT__*`)
 
+<img width="1324" height="794" alt="Screenshot 2026-03-11 at 00 19 16" src="https://github.com/user-attachments/assets/5dca56e8-aea9-4275-9d88-bc07ef368e33" />
+
+
 ---
 
 ## Supported Sensors
@@ -629,3 +632,4 @@ cargo check
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
