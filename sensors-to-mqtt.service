@@ -1,33 +1,66 @@
 [Unit]
-Description=Sensors to MQTT Service
+Description=Sensors to MQTT Bridge Service
 Documentation=https://github.com/askrejans/sensors-to-mqtt
-After=network.target mosquitto.service
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/sensors-to-mqtt
-ExecStart=/usr/local/bin/sensors-to-mqtt --config /etc/sensors-to-mqtt/config.toml
-Restart=on-failure
-RestartSec=5s
-StandardOutput=journal
-StandardError=journal
+User=sensors
+Group=sensors
 
-# Environment variables
-Environment="RUST_LOG=info"
-Environment="RUST_BACKTRACE=1"
+# Path to the binary
+ExecStart=/usr/bin/sensors-to-mqtt --config /etc/sensors-to-mqtt/settings.toml
+
+# Working directory (app writes no state; /tmp is always available)
+WorkingDirectory=/tmp
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=50%
 
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log/sensors-to-mqtt
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
 
-# Resource limits
-LimitNOFILE=65536
-MemoryLimit=256M
+# Hardware device access for the service user.
+# i2c    covers /dev/i2c-* (I2C sensors: MPU-6500, BMP280, BME280, SHT31, BH1750, INA219, ADS1115)
+# dialout covers /dev/ttyACM*, /dev/ttyUSB*, /dev/ttyS* (serial sensors: SDS011, etc.)
+# gpio   covers /dev/gpiomem, /dev/gpiochip* (GPIO sensors)
+SupplementaryGroups=i2c dialout gpio
+
+# Capabilities
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# System call filtering
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sensors-to-mqtt
+
+# Environment variables (optional - can also use settings.toml)
+# Environment="SENSORS_TO_MQTT__LOG_LEVEL=info"
+# Environment="SENSORS_TO_MQTT__MQTT__HOST=mqtt.local"
 
 [Install]
 WantedBy=multi-user.target

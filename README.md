@@ -6,8 +6,9 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 
 ![sensors](https://github.com/user-attachments/assets/835dcf36-17c0-42ce-aec8-379e9177f768)
 
+---
 
-## Features
+## Key Capabilities
 
 - **Broad sensor support** — I2C environmental, power, motion, light, and ADC sensors; GPIO digital inputs; particulate matter (PM2.5/PM10); a synthetic test sensor (no hardware required)
 - **TCP bridge support** — connect to any sensor remotely via an [io-to-net](https://github.com/askrejans/io-to-net) bridge; all drivers work cross-platform over TCP
@@ -16,7 +17,6 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 - **Interactive terminal UI** — tabbed per-sensor views, live sparkline charts, G-meter canvas, keyboard navigation
 - **Daemon mode** — auto-detected when stdout is not a TTY; structured JSON logs, systemd-compatible
 - **TOML configuration** with environment-variable overrides (`SENSORS_TO_MQTT__*`)
-- **Cross-compilation** and DEB/RPM packaging via `scripts/build_packages.sh`
 
 ---
 
@@ -37,6 +37,62 @@ Part of the **to-mqtt** ecosystem — see also [`gps-to-mqtt`](https://github.co
 
 > **I2C / TCP** — local hardware on Linux, or remote via TCP bridge on any platform.
 > GPS and ECU (Speeduino) are handled by dedicated sibling projects.
+
+---
+
+## Installation
+
+### Debian / Ubuntu
+
+```bash
+# Add g86racing APT repository
+curl -fsSL https://g86racing.com/packages/deb/g86racing-archive-keyring.gpg \
+    | sudo tee /usr/share/keyrings/g86racing-archive-keyring.gpg > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/g86racing-archive-keyring.gpg] \
+    https://g86racing.com/packages/deb stable main" \
+    | sudo tee /etc/apt/sources.list.d/g86racing.list
+
+sudo apt-get update
+sudo apt-get install sensors-to-mqtt
+```
+
+### Fedora / RHEL / AlmaLinux / Rocky Linux
+
+```bash
+# Add g86racing RPM repository
+sudo tee /etc/yum.repos.d/g86racing.repo <<'EOF'
+[g86racing]
+name=g86racing packages
+baseurl=https://g86racing.com/packages/rpm
+enabled=1
+gpgcheck=0
+EOF
+
+sudo dnf install sensors-to-mqtt
+```
+
+### macOS (Homebrew)
+
+```bash
+brew tap g86racing/g86racing
+brew install sensors-to-mqtt
+```
+
+> On macOS only TCP bridge sensors are available (no local I2C/GPIO hardware). Use [io-to-net](https://github.com/askrejans/io-to-net) on the device with the physical sensors.
+
+### Windows
+
+Not supported — I2C and GPIO sensors require Linux hardware. Use TCP bridge mode from a Linux/macOS machine to access remote sensors.
+
+### Docker
+
+```bash
+# Pull and run
+docker pull ghcr.io/askrejans/sensors-to-mqtt:latest
+
+# Or use docker-compose (edit docker-compose.yml for your sensor devices)
+docker compose up -d
+```
 
 ---
 
@@ -436,66 +492,101 @@ Payloads are JSON objects. Numeric values are `f64`.
 
 ---
 
-## Installation
-
-### From packages (recommended for Raspberry Pi)
-
-Download the latest `.deb` from Releases and install:
-
-```bash
-sudo dpkg -i sensors-to-mqtt_*.deb
-```
-
-### From source
-
-```bash
-cargo install --path .
-```
-
----
-
 ## Systemd Service
 
-The installed package includes a ready-made unit file. To enable manually:
+The installed package creates a `sensors` system user and installs a hardened unit file.
 
 ```bash
-sudo cp sensors-to-mqtt.service /lib/systemd/system/
-sudo systemctl daemon-reload
+# Enable and start
 sudo systemctl enable --now sensors-to-mqtt
+
+# View logs
 sudo journalctl -u sensors-to-mqtt -f
+
+# Check status
+sudo systemctl status sensors-to-mqtt
 ```
 
-Edit `ExecStart` in the unit file to point to your config:
+Copy the example config and edit for your sensors:
 
+```bash
+sudo cp /etc/sensors-to-mqtt/settings.toml.example /etc/sensors-to-mqtt/settings.toml
+sudo nano /etc/sensors-to-mqtt/settings.toml
+sudo systemctl restart sensors-to-mqtt
 ```
-ExecStart=/usr/bin/sensors-to-mqtt --config /etc/sensors-to-mqtt/config.toml
+
+### I2C / GPIO permissions
+
+The service user `sensors` is automatically added to the `i2c`, `dialout`, and `gpio` groups at install time. If you add sensors after installation, ensure the device group matches:
+
+```bash
+# Verify groups
+id sensors
+
+# Add manually if needed
+sudo usermod -aG i2c sensors
+sudo systemctl restart sensors-to-mqtt
 ```
 
 ---
 
-## Building Packages (DEB / RPM)
+## Docker
 
-Requires [`cross`](https://github.com/cross-rs/cross) and [`fpm`](https://github.com/jordansissel/fpm):
+```bash
+# Build image
+docker build -t sensors-to-mqtt .
+
+# Run with docker-compose (edit docker-compose.yml first)
+docker compose up -d
+
+# View logs
+docker compose logs -f sensors-to-mqtt
+```
+
+For I2C sensors, uncomment the `devices` and `group_add` sections in `docker-compose.yml` and set the correct `i2c` group GID:
+
+```bash
+getent group i2c | cut -d: -f3   # get GID
+```
+
+---
+
+## Building Packages
+
+Requires [`cross`](https://github.com/cross-rs/cross) for Linux cross-compilation:
 
 ```bash
 cargo install cross
-gem install fpm
 ```
 
-Build all architectures and formats:
+Build all platforms:
 
 ```bash
 ./scripts/build_packages.sh
 ```
 
-Build a specific target:
+Build specific targets:
 
 ```bash
-./scripts/build_packages.sh --arch arm64 --type deb
-./scripts/build_packages.sh --arch x86-64 --type rpm --no-cross
+./scripts/build_packages.sh --platform linux --arch arm64 --type deb
+./scripts/build_packages.sh --platform linux --type rpm
+./scripts/build_packages.sh --platform mac
+./scripts/build_packages.sh --platform linux --arch x64 --no-cross
 ```
 
-Packages are written to `./dist/`.
+Packages are written to `./release/<version>/`.
+
+---
+
+## Environment Variables
+
+Any config key can be overridden with an environment variable using double-underscore as the nesting separator:
+
+```bash
+SENSORS_TO_MQTT__MQTT__HOST=192.168.1.10
+SENSORS_TO_MQTT__MQTT__PORT=1884
+SENSORS_TO_MQTT__LOG_LEVEL=debug
+```
 
 ---
 
@@ -517,18 +608,6 @@ The TUI renders fields automatically based on the `VizType` in each `FieldDescri
 | `GForce` | G-meter canvas + sparkline |
 | `AngularRate` | Sparkline (°/s) |
 | `Angle` | Sparkline (°) |
-
----
-
-## Environment Variables
-
-Any config key can be overridden with an environment variable using double-underscore as the nesting separator:
-
-```bash
-SENSORS_TO_MQTT__MQTT__HOST=192.168.1.10
-SENSORS_TO_MQTT__MQTT__PORT=1884
-SENSORS_TO_MQTT__LOG_LEVEL=debug
-```
 
 ---
 

@@ -1,0 +1,30 @@
+services:
+  sensors-to-mqtt:
+    image: sensors-to-mqtt:latest
+    build: .
+    container_name: sensors-to-mqtt
+    restart: unless-stopped
+    environment:
+      - SENSORS_TO_MQTT__MQTT__HOST=${SENSORS_MQTT_HOST:-localhost}
+      - SENSORS_TO_MQTT__MQTT__PORT=${SENSORS_MQTT_PORT:-1883}
+      - SENSORS_TO_MQTT__MQTT__BASE_TOPIC=${SENSORS_MQTT_BASE_TOPIC:-/SENSORS}
+      - SENSORS_TO_MQTT__LOG_LEVEL=${SENSORS_LOG_LEVEL:-info}
+    # Mount your config file:
+    volumes:
+      - ./config.toml:/etc/sensors-to-mqtt/settings.toml:ro
+    # I2C sensors (Raspberry Pi / embedded Linux):
+    # devices:
+    #   - /dev/i2c-1:/dev/i2c-1
+    # group_add:
+    #   - "998"    # i2c group GID — check with: getent group i2c | cut -d: -f3
+    #
+    # GPIO sensors:
+    # devices:
+    #   - /dev/gpiomem:/dev/gpiomem
+    #
+    # Serial sensors (SDS011 PM2.5, etc.):
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    #
+    # For TCP bridge sensors (io-to-net) no device mapping is needed.
+    network_mode: host
