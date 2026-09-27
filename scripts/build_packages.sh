@@ -195,7 +195,7 @@ Part of the to-mqtt ecosystem.
 
 %pre
 for grp in i2c gpio; do
-    getent group "$grp" >/dev/null 2>&1 || groupadd --system "$grp" 2>/dev/null || true
+    getent group "\$grp" >/dev/null 2>&1 || groupadd --system "\$grp" 2>/dev/null || true
 done
 if ! id sensors >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /sbin/nologin \
