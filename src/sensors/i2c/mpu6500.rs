@@ -348,17 +348,11 @@ impl MPU6500 {
         }
     }
 
-    /// Remove the static gravity component from accelerometer readings.
-    /// X and Y get gravity subtracted proportionally; Z is returned raw
-    /// (gravity is mostly along Z when the sensor is horizontal).
+    /// Stationary startup calibration establishes the mounting reference.
+    /// Preserve lateral/longitudinal acceleration; subtract the calibrated 1G Z baseline.
+    /// Normalizing each live sample would incorrectly erase sustained cornering/braking.
     fn remove_gravity(raw: [f64; 3]) -> [f64; 3] {
-        let mag = (raw[0].powi(2) + raw[1].powi(2) + raw[2].powi(2)).sqrt();
-        if mag < 1e-9 {
-            return raw;
-        }
-        let scale = 1.0 / mag;
-        let gravity = [raw[0] * scale, raw[1] * scale, raw[2] * scale];
-        [raw[0] - gravity[0], raw[1] - gravity[1], raw[2]]
+        [raw[0], raw[1], raw[2] - 1.0]
     }
 
     /// Perform calibration: 300 samples @ 10 ms, average, subtract 1G from Z.
@@ -590,6 +584,11 @@ fn parse_sensor_frame(buf: &[u8; 14]) -> [i16; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stationary_reference_keeps_sustained_cornering_and_braking() {
+        assert_eq!(super::MPU6500::remove_gravity([0.6, -0.4, 1.0]), [0.6, -0.4, 0.0]);
+    }
+
     use super::*;
 
     #[test]

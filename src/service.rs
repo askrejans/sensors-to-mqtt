@@ -89,6 +89,8 @@ pub fn spawn_sensor_task(
             }
         };
 
+        let boot = format!("{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default());
+        let mut sequence = 0u64;
         let interval_ms = 20u64; // 50 Hz; driver sample_rate limits actual rate
 
         loop {
@@ -117,6 +119,12 @@ pub fn spawn_sensor_task(
                     push_data(&state, &name, data.clone()).await;
                     if let Some(ref h) = mqtt {
                         publish_sensor_data(h, &base_topic, &name, &data).await;
+                        if cfg.driver == "mpu6500" {
+                            sequence += 1;
+                            if let Some(packet) = crate::telemetry::motion_packet(&data, &name, &boot, sequence) {
+                                h.publish(format!("{}/{}/telemetry", base_topic.trim_end_matches('/'), name), packet.to_string()).await;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
