@@ -25,7 +25,7 @@
 //! RX: [len_hi][len_lo][data...]       (2-byte BE length + payload)
 //! ```
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::{Read, Write as IoWrite};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -86,7 +86,9 @@ impl I2cBus for TcpI2c {
         if self.framing {
             tcp_read_framed(&mut self.stream, buf).context("TCP bridge: read failed")
         } else {
-            self.stream.read_exact(buf).context("TCP bridge: read failed")
+            self.stream
+                .read_exact(buf)
+                .context("TCP bridge: read failed")
         }
     }
 
@@ -97,8 +99,7 @@ impl I2cBus for TcpI2c {
             .write_all(write)
             .context("TCP bridge: write_read (write) failed")?;
         if self.framing {
-            tcp_read_framed(&mut self.stream, read)
-                .context("TCP bridge: write_read (read) failed")
+            tcp_read_framed(&mut self.stream, read).context("TCP bridge: write_read (read) failed")
         } else {
             self.stream
                 .read_exact(read)
@@ -112,7 +113,7 @@ impl I2cBus for TcpI2c {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-pub struct LocalI2c(linux_embedded_hal::I2cdev);
+pub struct LocalI2c(pub linux_embedded_hal::I2cdev);
 
 #[cfg(target_os = "linux")]
 impl I2cBus for LocalI2c {

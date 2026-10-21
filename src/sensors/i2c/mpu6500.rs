@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use crate::config::SensorConfig;
 use crate::filters::kalman_1d::KalmanFilter1D;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
-use crate::transport::{open_i2c, I2cBus};
+use crate::transport::{I2cBus, open_i2c};
 
 // ---------------------------------------------------------------------------
 // Register map
@@ -314,7 +314,8 @@ impl MPU6500 {
     /// and the bridge returns its pre-read frame — `read_len` must be 14.
     fn read_raw_6(&mut self) -> Result<[i16; 6]> {
         let mut buf = [0u8; 14];
-        self.device.write_read(self.address, &[ACCEL_XOUT_H], &mut buf)?;
+        self.device
+            .write_read(self.address, &[ACCEL_XOUT_H], &mut buf)?;
         Ok(parse_sensor_frame(&buf))
     }
 
@@ -396,7 +397,8 @@ impl Sensor for MPU6500 {
             16 => 0x18,
             _ => 0x18,
         };
-        self.device.write(self.address, &[ACCEL_CONFIG, accel_cfg])?;
+        self.device
+            .write(self.address, &[ACCEL_CONFIG, accel_cfg])?;
         // Gyro config
         let gyro_cfg: u8 = match self.settings.gyro_range {
             250 => 0x00,
@@ -586,7 +588,10 @@ fn parse_sensor_frame(buf: &[u8; 14]) -> [i16; 6] {
 mod tests {
     #[test]
     fn stationary_reference_keeps_sustained_cornering_and_braking() {
-        assert_eq!(super::MPU6500::remove_gravity([0.6, -0.4, 1.0]), [0.6, -0.4, 0.0]);
+        assert_eq!(
+            super::MPU6500::remove_gravity([0.6, -0.4, 1.0]),
+            [0.6, -0.4, 0.0]
+        );
     }
 
     use super::*;

@@ -368,7 +368,7 @@ mod tests {
         let mut s = make_sensor();
         for _ in 0..50 {
             let v = s.read().unwrap().fields["rpm"];
-            assert!(v >= 700.0 && v <= 6600.0, "rpm {} out of range", v);
+            assert!((700.0..=6600.0).contains(&v), "rpm {} out of range", v);
         }
     }
 
@@ -377,7 +377,7 @@ mod tests {
         let mut s = make_sensor();
         for _ in 0..200 {
             let v = s.read().unwrap().fields["throttle_pct"];
-            assert!(v >= 0.0 && v <= 100.0, "throttle {} out of [0,100]", v);
+            assert!((0.0..=100.0).contains(&v), "throttle {} out of [0,100]", v);
         }
     }
 

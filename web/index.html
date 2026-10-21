@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#08090a">
+  <title>sensors-to-mqtt</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand"><span class="name">sensors-to-mqtt</span><span class="ver" id="version">—</span></div>
+    <div class="lamps" aria-label="Link status">
+      <span class="lamp" id="lamp-sensors" title="Sensors delivering"><i></i><span id="lamp-sensors-t">Sensors</span></span>
+      <span class="lamp" id="lamp-mqtt" title="MQTT broker"><i></i>MQTT</span>
+      <span class="lamp" id="lamp-link" title="Dashboard data stream"><i></i>Live</span>
+    </div>
+    <div class="clock"><span class="lbl" id="health">—</span></div>
+  </header>
+
+  <section class="panel readout" aria-label="Primary readout">
+    <div class="cell"><span class="lbl">Lateral</span><span class="val"><b id="r-lat">—</b><small>g</small></span><span class="sub">&nbsp;</span></div>
+    <div class="cell"><span class="lbl">Longitudinal</span><span class="val"><b id="r-lon">—</b><small>g</small></span><span class="sub">&nbsp;</span></div>
+    <div class="cell"><span class="lbl">Combined</span><span class="val"><b id="r-comb">—</b><small>g</small></span><span class="sub" id="r-comb-sub">&nbsp;</span></div>
+    <div class="cell"><span class="lbl">Yaw rate</span><span class="val"><b id="r-yaw">—</b><small>°/s</small></span><span class="sub">&nbsp;</span></div>
+    <div class="cell"><span class="lbl">Ambient</span><span class="val"><b id="r-amb">—</b><small id="r-amb-u">°C</small></span><span class="sub" id="r-amb-sub">&nbsp;</span></div>
+    <div class="cell"><span class="lbl">Data rate</span><span class="val"><b id="r-rate">—</b><small>Hz</small></span><span class="sub" id="r-rate-sub">&nbsp;</span></div>
+  </section>
+
+  <nav class="keys" aria-label="Mode">
+    <button class="key" data-mode="dash"><i class="led"></i>Dash</button>
+    <button class="key" data-mode="sensors"><i class="led"></i>Sensors</button>
+    <button class="key" data-mode="charts"><i class="led"></i>Charts</button>
+    <button class="key" data-mode="diag"><i class="led"></i>Diagnostics</button>
+    <button class="key" data-mode="config"><i class="led"></i>Configuration</button>
+    <span class="spacer"></span>
+    <span class="keygrp">
+    <button class="key small" id="k-temp" title="Temperature units"><i class="led on"></i><span id="k-temp-t">°C</span></button>
+    <button class="key small" id="k-theme" title="Light or dark theme"><i class="led on"></i><span id="k-theme-t">Dark</span></button>
+    </span>
+  </nav>
+
+  <main>
+    <section class="mode" id="mode-dash" hidden>
+      <div class="grid g-motion">
+        <article class="panel">
+          <h2>G-ball <span class="note" id="gball-note">lateral × longitudinal</span></h2>
+          <canvas class="square" id="gball"></canvas>
+        </article>
+        <div class="grid g-dash" id="dash-gauges"></div>
+      </div>
+    </section>
+
+    <section class="mode" id="mode-sensors" hidden>
+      <div class="grid g-engine">
+        <article class="panel">
+          <h2>Channels <span class="note">canonical, as published on MQTT</span></h2>
+          <div class="table-wrap"><table class="tbl" id="ch-table">
+            <thead><tr><th>Channel</th><th class="n">Value</th><th>Unit</th><th>Sensor</th><th class="n">Age</th></tr></thead><tbody></tbody>
+          </table></div>
+        </article>
+        <div class="grid g-sensors" id="sensor-cards"></div>
+      </div>
+    </section>
+
+    <section class="mode" id="mode-charts" hidden>
+      <article class="panel">
+        <h2>Live charts <span class="note" id="chart-note">rolling window</span></h2>
+        <div class="actions top">
+          <button class="key small" data-window="30"><i class="led"></i>30 s</button>
+          <button class="key small" data-window="60"><i class="led"></i>60 s</button>
+          <button class="key small" data-window="120"><i class="led"></i>2 min</button>
+          <button class="key small" id="k-chart-pause"><i class="led"></i><span>Pause</span></button>
+        </div>
+        <div class="picker" id="chart-picker"></div>
+      </article>
+      <div class="charts" id="charts"></div>
+    </section>
+
+    <section class="mode" id="mode-diag" hidden>
+      <div class="grid g-diag">
+        <article class="panel">
+          <h2>Sensors</h2>
+          <div class="table-wrap"><table class="tbl" id="diag-sensors">
+            <thead><tr><th>Sensor</th><th>Driver</th><th>Connection</th><th class="n">Rate</th><th class="n">Age</th></tr></thead><tbody></tbody>
+          </table></div>
+        </article>
+        <article class="panel">
+          <h2>Service</h2>
+          <dl class="kv" id="diag-link"></dl>
+          <h2>Counters</h2>
+          <dl class="kv" id="diag-counters"></dl>
+        </article>
+      </div>
+    </section>
+
+    <section class="mode" id="mode-config" hidden>
+      <div class="grid g-cfg">
+        <article class="panel">
+          <h2>Wiring</h2>
+          <dl class="kv" id="cfg-wiring"></dl>
+          <h2>Endpoints</h2>
+          <ul class="links" id="cfg-endpoints"></ul>
+        </article>
+        <article class="panel span2">
+          <h2>Effective configuration <span class="note">read-only · secrets masked · edit settings.toml or SENSORS_TO_MQTT_* variables</span></h2>
+          <div class="cfg" id="cfg-groups"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="auth">
+    <form method="dialog" class="panel">
+      <h2>Access token required</h2>
+      <p>This gateway protects its API with <code>http.token</code>. The token is kept in this browser only.</p>
+      <input id="auth-token" type="password" autocomplete="current-password" placeholder="Bearer token" required>
+      <div class="actions"><button class="key" value="ok"><i class="led on"></i>Connect</button></div>
+    </form>
+  </dialog>
+
+  <footer class="foot"><span id="foot-source">—</span><span id="foot-uptime"></span></footer>
+</body>
+</html>

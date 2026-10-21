@@ -13,7 +13,7 @@ use ratatui::widgets::{
     Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph,
 };
 
-use crate::models::{AppState, MqttStatus, SensorHistory, SensorStatus};
+use crate::models::{Counters, MqttStatus, SensorHistory, SensorStatus, Shared};
 use crate::sensors::SensorData;
 use crate::tui::widgets::{data_row, section_line, status_dot};
 
@@ -36,7 +36,8 @@ pub struct StateSnapshot {
 }
 
 impl StateSnapshot {
-    pub fn from(s: &AppState, log_buf: &Arc<std::sync::Mutex<VecDeque<String>>>) -> Self {
+    pub fn from(shared: &Shared, log_buf: &Arc<std::sync::Mutex<VecDeque<String>>>) -> Self {
+        let s = shared.read();
         let sensor_names = s.sensor_names();
         let sensor_statuses: Vec<SensorStatus> = sensor_names
             .iter()
@@ -44,14 +45,7 @@ impl StateSnapshot {
                 s.sensor_statuses
                     .get(n)
                     .cloned()
-                    .unwrap_or_else(|| SensorStatus {
-                        name: n.clone(),
-                        driver: String::new(),
-                        connection_display: String::new(),
-                        enabled: false,
-                        connected: false,
-                        last_error: None,
-                    })
+                    .unwrap_or_else(|| SensorStatus::new(n, "", String::new(), false))
             })
             .collect();
         let sensor_data: Vec<Option<SensorData>> = sensor_names
@@ -64,21 +58,24 @@ impl StateSnapshot {
             .collect();
 
         let logs = {
-            let g = log_buf.lock().unwrap();
+            let g = log_buf.lock().unwrap_or_else(|e| e.into_inner());
             g.iter().cloned().collect()
         };
 
-        use std::sync::atomic::Ordering;
         Self {
             version: env!("CARGO_PKG_VERSION").to_string(),
             sensor_names,
             sensor_statuses,
             sensor_data,
             sensor_history,
-            mqtt_status: s.mqtt_status.read().unwrap().clone(),
-            messages_published: s.messages_published.load(Ordering::Relaxed),
-            mqtt_address: s.mqtt_address.clone(),
-            mqtt_enabled: s.mqtt_enabled,
+            mqtt_status: s.mqtt_status.clone(),
+            messages_published: Counters::get(&shared.counters.mqtt_published),
+            mqtt_address: shared
+                .info
+                .mqtt
+                .clone()
+                .unwrap_or_else(|| "disabled".into()),
+            mqtt_enabled: shared.info.mqtt.is_some(),
             logs,
             selected_tab: s.selected_tab,
         }
@@ -230,7 +227,7 @@ fn render_g_meter(frame: &mut Frame, area: Rect, data: Option<&SensorData>) {
             let fill = ((val.abs() / max_g) * bar_width as f64).min(bar_width as f64) as usize;
             let empty = bar_width.saturating_sub(fill);
             let bar_color = g_color(val.abs());
-            let bar_str = format!("█").repeat(fill) + &"░".repeat(empty);
+            let bar_str = "█".repeat(fill) + &"░".repeat(empty);
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("{:<12} {:+.3}G ", label, val),

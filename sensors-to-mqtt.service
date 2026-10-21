@@ -1,5 +1,5 @@
 [Unit]
-Description=Sensors to MQTT Bridge Service
+Description=Sensors to MQTT Bridge (I2C, GPIO, serial, TCP bridge)
 Documentation=https://github.com/askrejans/sensors-to-mqtt
 After=network-online.target
 Wants=network-online.target
@@ -8,14 +8,15 @@ StartLimitIntervalSec=60
 
 [Service]
 Type=simple
-User=sensors
-Group=sensors
+User=sensors-to-mqtt
+Group=sensors-to-mqtt
 
-# Path to the binary
-ExecStart=/usr/bin/sensors-to-mqtt --config /etc/sensors-to-mqtt/settings.toml
+# --headless: log to the journal, no terminal dashboard
+ExecStart=/usr/bin/sensors-to-mqtt --headless --config /etc/sensors-to-mqtt/settings.toml
 
-# Working directory (app writes no state; /tmp is always available)
+# The service writes no state
 WorkingDirectory=/tmp
+UMask=0077
 
 # Restart policy
 Restart=always
@@ -39,9 +40,9 @@ RestrictSUIDSGID=true
 LockPersonality=true
 
 # Hardware device access for the service user.
-# i2c    covers /dev/i2c-* (I2C sensors: MPU-6500, BMP280, BME280, SHT31, BH1750, INA219, ADS1115)
-# dialout covers /dev/ttyACM*, /dev/ttyUSB*, /dev/ttyS* (serial sensors: SDS011, etc.)
-# gpio   covers /dev/gpiomem, /dev/gpiochip* (GPIO sensors)
+# i2c     covers /dev/i2c-* (MPU-6500, BMP280, BME280, SHT31, BH1750, INA219, ADS1115)
+# dialout covers /dev/ttyACM*, /dev/ttyUSB*, /dev/ttyS* (SDS011 and other serial sensors)
+# gpio    covers /dev/gpiomem, /dev/gpiochip* (buttons and switches)
 SupplementaryGroups=i2c dialout gpio
 
 # Capabilities
@@ -59,8 +60,9 @@ StandardError=journal
 SyslogIdentifier=sensors-to-mqtt
 
 # Environment variables (optional - can also use settings.toml)
-# Environment="SENSORS_TO_MQTT__LOG_LEVEL=info"
-# Environment="SENSORS_TO_MQTT__MQTT__HOST=mqtt.local"
+# Environment="SENSORS_TO_MQTT_LOG_LEVEL=info"
+# Environment="SENSORS_TO_MQTT_MQTT_HOST=mqtt.local"
+# Environment="SENSORS_TO_MQTT_HTTP_BIND=0.0.0.0"
 
 [Install]
 WantedBy=multi-user.target

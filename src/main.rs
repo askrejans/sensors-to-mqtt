@@ -5,156 +5,309 @@
 //!   - stdout is piped / systemd → daemon mode (structured logs to stdout)
 
 use anyhow::Result;
-use gumdrop::Options as _;
+use clap::Parser;
 use std::collections::VecDeque;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::io::IsTerminal;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use sensors_to_mqtt::config::load_configuration;
-use sensors_to_mqtt::models::{AppState, SharedState};
-use sensors_to_mqtt::service::{register_sensors, spawn_sensor_task};
-use sensors_to_mqtt::{mqtt_handler, tui};
+use sensors_to_mqtt::config::{
+    AppConfig, ConnectionConfig, DRIVERS, I2cConnectionConfig, SensorConfig, load_configuration,
+};
+use sensors_to_mqtt::models::{Info, Shared};
+use sensors_to_mqtt::{output, scan, service, tui};
 
-// ---------------------------------------------------------------------------
-// CLI  (gumdrop)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, gumdrop::Options)]
-struct Opts {
-    #[options(help = "print help")]
-    help: bool,
-
-    #[options(short = "c", help = "path to config file (default: config.toml)")]
+/// Sensors (I2C, GPIO, serial, TCP bridge) to MQTT, HTTP and a web dashboard.
+#[derive(Debug, Parser)]
+#[command(version, about, after_help = drivers_help())]
+struct Cli {
+    /// Path to a TOML config file (default: ./config.toml, ./settings.toml, /etc/sensors-to-mqtt/)
+    #[arg(short, long, value_name = "FILE")]
     config: Option<String>,
 
-    #[options(long = "no-mqtt", help = "disable MQTT publishing")]
+    /// Validate the configuration, print the effective settings and exit
+    #[arg(long)]
+    check_config: bool,
+
+    /// Find the chips on a local I2C bus, suggest their configuration and exit
+    #[arg(long)]
+    scan: bool,
+
+    /// I2C bus for --scan
+    #[arg(
+        long,
+        value_name = "DEVICE",
+        default_value = "/dev/i2c-1",
+        requires = "scan"
+    )]
+    i2c_device: String,
+
+    /// Replace the configured sensors with one synthetic sensor (no hardware needed)
+    #[arg(long)]
+    simulate: bool,
+
+    /// Do not publish to MQTT
+    #[arg(long)]
     no_mqtt: bool,
 
-    #[options(long = "log-level", help = "log level: trace|debug|info|warn|error")]
+    /// Never start the terminal dashboard, even on a terminal
+    #[arg(long)]
+    headless: bool,
+
+    /// Log level: trace, debug, info, warn or error
+    #[arg(long, value_name = "LEVEL")]
     log_level: Option<String>,
+
+    /// Query the local HTTP /health endpoint and exit 0 (healthy) or 1
+    #[arg(long)]
+    healthcheck: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
+/// `--healthcheck`: minimal HTTP/1.0 GET so container images need no curl.
+fn healthcheck(config: &AppConfig) -> Result<bool> {
+    use std::io::{Read, Write};
+    anyhow::ensure!(
+        config.http.enabled,
+        "http.enabled is false; nothing to probe"
+    );
+    let host = match config.http.bind.as_str() {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        h => h,
+    };
+    let addr: std::net::SocketAddr = format!("{host}:{}", config.http.port).parse()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    stream.write_all(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")?;
+    let mut response = String::new();
+    stream.take(4096).read_to_string(&mut response)?;
+    println!("{}", response.lines().last().unwrap_or_default());
+    Ok(response.starts_with("HTTP/1.0 200") || response.starts_with("HTTP/1.1 200"))
+}
+
+fn drivers_help() -> String {
+    format!(
+        "Drivers: {}\n\nSettings can be overridden with SENSORS_TO_MQTT_<KEY>, e.g. SENSORS_TO_MQTT_MQTT_HOST, \
+         SENSORS_TO_MQTT_HTTP_PORT, SENSORS_TO_MQTT_LOG_LEVEL.",
+        DRIVERS.join(", ")
+    )
+}
+
+fn init_logging(config: &AppConfig, writer: Option<tui::TuiWriter>) {
+    let filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
+    match writer {
+        Some(w) => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(w)
+            .without_time()
+            .init(),
+        None if config.log_json => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .init(),
+        None => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(std::io::stdout().is_terminal())
+            .init(),
+    }
+}
+
+fn simulated_sensor() -> SensorConfig {
+    SensorConfig {
+        name: "sim".into(),
+        enabled: true,
+        driver: "synthetic".into(),
+        connection: ConnectionConfig::I2c(I2cConnectionConfig {
+            device: "simulated".into(),
+            address: 0,
+        }),
+        settings: None,
+        channels: None,
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opts = Opts::parse_args_default_or_exit();
+    let cli = Cli::parse();
 
-    let cfg = load_configuration(opts.config.as_deref())?;
-
-    let is_tty = atty::is(atty::Stream::Stdout);
-
-    // Log buffer shared with TUI writer
-    let log_buf: Arc<std::sync::Mutex<VecDeque<String>>> =
-        Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(1000)));
-
-    // Initialise logging
-    let log_level = opts
-        .log_level
-        .as_deref()
-        .unwrap_or(cfg.log_level.as_str())
-        .to_string();
-
-    if is_tty {
-        let tui_writer = tui::TuiWriter::new(Arc::clone(&log_buf));
-        let filter = EnvFilter::try_new(&log_level).unwrap_or_else(|_| EnvFilter::new("info"));
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(tui_writer)
-            .without_time()
-            .init();
-    } else {
-        let filter = EnvFilter::try_new(&log_level).unwrap_or_else(|_| EnvFilter::new("info"));
-        if cfg.log_json {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .json()
-                .init();
-        } else {
-            tracing_subscriber::fmt().with_env_filter(filter).init();
+    if cli.scan {
+        if let Err(e) = scan::run(&cli.i2c_device) {
+            eprintln!("Scan failed: {e:#}");
+            std::process::exit(1);
         }
+        return Ok(());
     }
 
-    tracing::info!("Starting sensors-to-mqtt v{}", env!("CARGO_PKG_VERSION"));
-
-    let cancel = CancellationToken::new();
-
-    // MQTT
-    let mqtt_handle = if cfg.mqtt.enabled && !opts.no_mqtt {
-        Some(mqtt_handler::spawn_mqtt_task(&cfg.mqtt))
-    } else {
-        None
-    };
-
-    let mqtt_address = if cfg.mqtt.enabled && !opts.no_mqtt {
-        cfg.mqtt.address()
-    } else {
-        "disabled".to_string()
-    };
-
-    // Shared application state
-    let state: SharedState = Arc::new(RwLock::new(AppState::new(
-        mqtt_address,
-        cfg.mqtt.enabled && !opts.no_mqtt,
-        1000,
-    )));
-
-    // Register all configured sensors in the state map
-    {
-        let mut s = state.write().await;
-        register_sensors(&mut s, &cfg.sensors);
-        if let Some(ref h) = mqtt_handle {
-            s.messages_published = Arc::clone(&h.counter);
-            // Share the exact same Arc so TUI always reflects live MQTT state
-            s.mqtt_status = Arc::clone(&h.status);
+    let mut config = match load_configuration(cli.config.as_deref()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Configuration error: {e:#}");
+            std::process::exit(2);
         }
+    };
+    if cli.simulate {
+        config.sensors = vec![simulated_sensor()];
+    }
+    if cli.no_mqtt {
+        config.mqtt.enabled = false;
+    }
+    if let Some(level) = &cli.log_level {
+        config.log_level = level.clone();
+    }
+    if let Err(e) = config.validate() {
+        eprintln!("Configuration error: {e:#}");
+        std::process::exit(2);
     }
 
-    // Spawn a task per enabled sensor
-    for sensor_cfg in &cfg.sensors {
-        if !sensor_cfg.enabled {
-            tracing::info!("Sensor '{}' is disabled, skipping", sensor_cfg.name);
-            continue;
-        }
-        spawn_sensor_task(
-            sensor_cfg.clone(),
-            Arc::clone(&state),
-            mqtt_handle.clone(),
-            cancel.clone(),
-            cfg.mqtt.base_topic.clone(),
+    if cli.healthcheck {
+        let healthy = healthcheck(&config).unwrap_or_else(|e| {
+            eprintln!("healthcheck failed: {e:#}");
+            false
+        });
+        std::process::exit(if healthy { 0 } else { 1 });
+    }
+
+    if cli.check_config {
+        println!("{}", serde_json::to_string_pretty(&config.redacted())?);
+        println!(
+            "\nConfiguration OK ({})",
+            config
+                .config_path
+                .as_deref()
+                .unwrap_or("defaults + environment")
+        );
+        return Ok(());
+    }
+
+    let interactive = !cli.headless && std::io::stdout().is_terminal();
+    let log_buf = Arc::new(Mutex::new(VecDeque::with_capacity(1000)));
+    init_logging(
+        &config,
+        interactive.then(|| tui::TuiWriter::new(log_buf.clone())),
+    );
+
+    info!("sensors-to-mqtt v{} starting", env!("CARGO_PKG_VERSION"));
+    match &config.config_path {
+        Some(p) => info!("Configuration: {p}"),
+        None => warn!("No configuration file found; using defaults and environment"),
+    }
+    if config.sensors.iter().all(|s| !s.enabled) {
+        warn!(
+            "No sensor is enabled; add [[sensors]] to the configuration, run --scan, or try --simulate"
         );
     }
 
-    // Signal handler
+    let outputs = output::describe(&config);
+    for o in &outputs {
+        info!("Output: {o}");
+    }
+    let shared = Shared::new(
+        Info {
+            version: env!("CARGO_PKG_VERSION"),
+            mqtt: config.mqtt.enabled.then(|| config.mqtt.address()),
+            outputs,
+        },
+        config.mqtt.enabled,
+    );
+    service::register_sensors(&mut shared.write(), &config.sensors);
+
+    let config = Arc::new(config);
+    let cancel = CancellationToken::new();
+    let mut tasks = JoinSet::new();
+    output::spawn_all(&config, &shared, &cancel, &mut tasks);
+    let (hub, threads) = service::start(&shared, &config.sensors, &cancel);
+
     {
         let c = cancel.clone();
         tokio::spawn(async move {
-            let mut signals = signal_hook_tokio::Signals::new(&[
-                signal_hook::consts::SIGTERM,
-                signal_hook::consts::SIGINT,
-            ])
-            .expect("signal handler");
-            use futures_util::StreamExt;
-            if signals.next().await.is_some() {
-                tracing::info!("Shutdown signal received");
-                c.cancel();
-            }
+            shutdown_signal().await;
+            c.cancel();
         });
     }
 
-    // Run TUI or wait for cancel
-    if is_tty {
-        tui::run_tui(Arc::clone(&state), Arc::clone(&log_buf), cancel.clone()).await?;
+    if interactive {
+        let refresh = Duration::from_millis(config.tui_refresh_rate_ms.clamp(20, 2000));
+        if let Err(e) = tui::run_tui(shared.clone(), log_buf, cancel.clone(), refresh).await {
+            eprintln!("TUI error: {e:#}");
+        }
         cancel.cancel();
     } else {
-        tracing::info!("Running in daemon mode (no TUI)");
+        info!("Running headless");
         cancel.cancelled().await;
     }
 
-    tracing::info!("Shutting down");
+    info!("Shutting down");
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while tasks.join_next().await.is_some() {}
+        let _ = hub.await;
+        // sensor threads notice the cancel within 50 ms, or after the read in progress
+        let _ = tokio::task::spawn_blocking(move || {
+            for t in threads {
+                let _ = t.join();
+            }
+        })
+        .await;
+    })
+    .await;
+    info!("Shutdown complete");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("Received Ctrl+C"),
+            _ = term.recv() => info!("Received SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("Received Ctrl+C");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+        let cli = Cli::parse_from([
+            "sensors-to-mqtt",
+            "-c",
+            "x.toml",
+            "--simulate",
+            "--headless",
+            "--no-mqtt",
+        ]);
+        assert_eq!(cli.config.as_deref(), Some("x.toml"));
+        assert!(cli.simulate && cli.headless && cli.no_mqtt);
+        assert!(
+            Cli::try_parse_from(["sensors-to-mqtt", "--i2c-device", "/dev/i2c-0"]).is_err(),
+            "only with --scan"
+        );
+        let cli = Cli::parse_from(["sensors-to-mqtt", "--scan"]);
+        assert_eq!(cli.i2c_device, "/dev/i2c-1");
+        assert!(drivers_help().contains("mpu6500"));
+    }
+
+    #[test]
+    fn simulated_sensor_is_valid() {
+        let c = AppConfig {
+            sensors: vec![simulated_sensor()],
+            ..AppConfig::default()
+        };
+        c.validate().unwrap();
+    }
 }

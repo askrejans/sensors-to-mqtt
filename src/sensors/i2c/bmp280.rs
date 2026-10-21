@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
-use crate::transport::{open_i2c, I2cBus};
+use crate::transport::{I2cBus, open_i2c};
 
 // ---------------------------------------------------------------------------
 // Register map (BMP280 datasheet §5.3)
@@ -116,7 +116,7 @@ impl CalibCoeffs {
         p = ((p * 2147483648 - var2) * 3125) / var1;
         var1 = (self.dig_p9 as i64) * (p / 8192) * (p / 8192) / 33554432;
         var2 = (self.dig_p8 as i64) * p / 524288;
-        p = p + (var1 + var2 + self.dig_p7 as i64) / 16;
+        p += (var1 + var2 + self.dig_p7 as i64) / 16;
         p as f64 / 100.0 // → hPa
     }
 }
@@ -211,8 +211,10 @@ impl Sensor for Bmp280 {
         self.calib = Some(CalibCoeffs::from_bytes(&raw));
 
         // Normal mode, osrs_t×2, osrs_p×16
+        #[allow(clippy::unusual_byte_groupings)] // register fields: osrs_t, osrs_p, mode
         self.write_reg(REG_CTRL_MEAS, 0b_101_101_11)?;
         // t_standby=500ms, filter×16, SPI 4-wire
+        #[allow(clippy::unusual_byte_groupings)] // t_sb, filter, spi3w_en
         self.write_reg(REG_CONFIG, 0b_100_101_00)?;
         Ok(())
     }

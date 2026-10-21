@@ -1,56 +1,63 @@
 [package]
 name = "sensors-to-mqtt"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+description = "Sensors (I2C, GPIO, serial, TCP bridge) to MQTT for the G86 telemetry ecosystem: canonical telemetry, on demand, HTTP API, web dashboard and TUI"
+repository = "https://github.com/askrejans/sensors-to-mqtt"
+readme = "README.md"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
-futures-util = "0.3.32"
-
-# Async trait support
-async-trait = "0.1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs"] }
+tokio-util = "0.7.20"
+futures-util = "0.3.34"
 
 # I2C (cross-platform trait only; Linux HAL is in target-specific section below)
-embedded-hal = "1.0"
+embedded-hal = "1.0.0"
 
-# Config loading
-config = "0.15"
-serde = { version = "1", features = ["derive"] }
-toml = "0.9.8"
+# Configuration
+config = "0.15.27"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.1.8"
 
-# MQTT
+# MQTT (pure Rust, rustls)
 rumqttc = "0.25.1"
 
+# HTTP API, Prometheus text exposition, web dashboard
+axum = "0.8.9"
+
 # TUI
-ratatui = "0.30.0"
-crossterm = "0.29"
+ratatui = "0.30.2"
+crossterm = "0.29.0"
 
 # Logging / tracing
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt"] }
 
 # CLI
-gumdrop = "0.8"
-atty = "0.2"
-
-# Signal handling
-signal-hook = "0.4.3"
-signal-hook-tokio = { version = "0.4.0", features = ["futures-v0_3"] }
+clap = { version = "4.6.7", features = ["derive"] }
 
 # Error handling
-anyhow = "1.0.102"
-thiserror = "2.0.18"
+anyhow = "1.0.104"
+thiserror = "2.0.21"
 
-# Serialisation / data
-serde_json = "1.0.149"
-chrono = { version = "0.4.44", features = ["serde"] }
-serialport = "4.8.1"
+# Data
+chrono = { version = "0.4.45", features = ["serde"] }
+serialport = "4.10.1"
+
 # I2C hardware drivers — Linux/Android only
 [target.'cfg(target_os = "linux")'.dependencies]
-i2cdev = "0.6"
-linux-embedded-hal = "0.4"
+i2cdev = "0.6.2"
+linux-embedded-hal = "0.5.0"
+
 [dev-dependencies]
-mockall = "0.14"
-tempfile = "3.26.0"
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

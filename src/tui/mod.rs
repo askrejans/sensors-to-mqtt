@@ -78,6 +78,7 @@ pub async fn run_tui(
     state: SharedState,
     log_buf: Arc<std::sync::Mutex<VecDeque<String>>>,
     cancel: CancellationToken,
+    refresh: std::time::Duration,
 ) -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -85,7 +86,7 @@ pub async fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = tui_loop(&mut terminal, state, log_buf, cancel).await;
+    let result = tui_loop(&mut terminal, state, log_buf, cancel, refresh).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -99,15 +100,11 @@ async fn tui_loop(
     state: SharedState,
     log_buf: Arc<std::sync::Mutex<VecDeque<String>>>,
     cancel: CancellationToken,
+    refresh: std::time::Duration,
 ) -> anyhow::Result<()> {
-    let refresh = std::time::Duration::from_millis(100);
-
     loop {
         // Take a snapshot to avoid holding the lock during rendering
-        let snap = {
-            let s = state.read().await;
-            tabs::StateSnapshot::from(&*s, &log_buf)
-        };
+        let snap = tabs::StateSnapshot::from(&state, &log_buf);
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -158,16 +155,20 @@ async fn tui_loop(
             widgets::render_log_panel(frame, chunks[3], &snap.logs);
         })?;
 
-        // Input with timeout
-        if event::poll(refresh)? {
-            if let Event::Key(key) = event::read()? {
-                let n_sensors = {
-                    let s = state.read().await;
-                    s.sensor_names().len()
-                };
-                let tab_count = n_sensors + 2;
-
-                let mut s = state.write().await;
+        // Input with timeout; polled on a blocking thread so the runtime
+        // worker stays free for the outputs
+        let key = tokio::task::spawn_blocking(move || -> std::io::Result<Option<Event>> {
+            if event::poll(refresh)? {
+                event::read().map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .await??;
+        if let Some(Event::Key(key)) = key {
+            {
+                let tab_count = snap.sensor_names.len() + 2;
+                let mut s = state.write();
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
                         break;

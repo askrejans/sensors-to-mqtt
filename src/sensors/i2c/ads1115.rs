@@ -35,7 +35,7 @@ use std::collections::HashMap;
 
 use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
-use crate::transport::{open_i2c, I2cBus};
+use crate::transport::{I2cBus, open_i2c};
 
 // Registers
 const REG_CONVERSION: u8 = 0x00;

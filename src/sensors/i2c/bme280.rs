@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
-use crate::transport::{open_i2c, I2cBus};
+use crate::transport::{I2cBus, open_i2c};
 
 // ---------------------------------------------------------------------------
 // Register map
@@ -105,7 +105,7 @@ impl Calib {
         let t1 = self.t1 as i64;
         let t2 = self.t2 as i64;
         let t3 = self.t3 as i64;
-        let var1 = ((adc_t as i64 >> 3) - (t1 << 1)) * t2 >> 11;
+        let var1 = (((adc_t as i64 >> 3) - (t1 << 1)) * t2) >> 11;
         let v2t = (adc_t as i64 >> 4) - t1;
         let var2 = v2t * v2t / 4096 * t3 / 16384;
         let t_fine = var1 + var2;
@@ -120,14 +120,14 @@ impl Calib {
         v2 += (v1 * self.p5 as i64) << 17;
         v2 += (self.p4 as i64) << 35;
         v1 = v1 * v1 * self.p3 as i64 / 256 + v1 * self.p2 as i64 * 4096;
-        v1 = (((1_i64) << 47) + v1) * p1 >> 33;
+        v1 = ((((1_i64) << 47) + v1) * p1) >> 33;
         if v1 == 0 {
             return 0.0;
         }
         let mut p = 1048576_i64 - adc_p as i64;
         p = ((p << 31) - v2) * 3125 / v1;
-        v1 = (self.p9 as i64) * (p >> 13) * (p >> 13) >> 25;
-        v2 = (self.p8 as i64) * p >> 19;
+        v1 = ((self.p9 as i64) * (p >> 13) * (p >> 13)) >> 25;
+        v2 = ((self.p8 as i64) * p) >> 19;
         p = (p + v1 + v2) / 256 + ((self.p7 as i64) << 4);
         p as f64 / 25600.0 // → hPa
     }
@@ -147,7 +147,7 @@ impl Calib {
         let v = (v >> 15)
             * (((((v * h6 / 4096) >> 10) * (v * h3 / 2048 + 32768) / 1024 + 2097152) * h2 + 8192)
                 >> 14);
-        let v = v - ((((v >> 15) * (v >> 15)) >> 7) * h1 >> 4);
+        let v = v - (((((v >> 15) * (v >> 15)) >> 7) * h1) >> 4);
         let v = v.clamp(0, 419430400);
         (v >> 12) as f64 / 1024.0
     }
@@ -250,8 +250,10 @@ impl Sensor for Bme280 {
         // humidity oversampling ×1 (must be set before ctrl_meas)
         self.write_reg(REG_CTRL_HUM, 0b001)?;
         // temp ×2, press ×16, normal mode
+        #[allow(clippy::unusual_byte_groupings)] // register fields: osrs_t, osrs_p, mode
         self.write_reg(REG_CTRL_MEAS, 0b_101_101_11)?;
         // t_standby=500ms, filter×16
+        #[allow(clippy::unusual_byte_groupings)] // t_sb, filter, spi3w_en
         self.write_reg(REG_CONFIG, 0b_100_101_00)?;
         Ok(())
     }

@@ -24,10 +24,17 @@ fn synthetic_sensor_config(name: &str) -> SensorConfig {
             address: 0x68,
         }),
         settings: None,
+        channels: None,
     }
 }
 
-fn tcp_sensor_config(name: &str, driver: &str, host: &str, port: u16, address: u16) -> SensorConfig {
+fn tcp_sensor_config(
+    name: &str,
+    driver: &str,
+    host: &str,
+    port: u16,
+    address: u16,
+) -> SensorConfig {
     SensorConfig {
         name: name.to_string(),
         enabled: true,
@@ -39,6 +46,7 @@ fn tcp_sensor_config(name: &str, driver: &str, host: &str, port: u16, address: u
             framing: false,
         }),
         settings: None,
+        channels: None,
     }
 }
 
@@ -151,6 +159,7 @@ fn test_open_i2c_rejects_serial_connection() {
             baud_rate: 9600,
         }),
         settings: None,
+        channels: None,
     };
     let result = open_i2c(&cfg, 0x76);
     assert!(result.is_err());
@@ -172,6 +181,7 @@ fn test_open_i2c_rejects_gpio_connection() {
             debounce_ms: 50,
         }),
         settings: None,
+        channels: None,
     };
     let result = open_i2c(&cfg, 0x76);
     assert!(result.is_err());
@@ -187,7 +197,10 @@ fn test_open_i2c_tcp_fails_without_server() {
     // not silently succeed — this validates the correct TCP code path is taken.
     let cfg = tcp_sensor_config("imu", "mpu6500", "127.0.0.1", 19999, 0x68);
     let result = open_i2c(&cfg, 0x68);
-    assert!(result.is_err(), "expected connection failure to unreachable server");
+    assert!(
+        result.is_err(),
+        "expected connection failure to unreachable server"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +220,7 @@ fn test_gpio_button_rejects_i2c_connection() {
             address: 0x40,
         }),
         settings: None,
+        channels: None,
     };
     let result = GpioButton::from_config(&cfg);
     assert!(result.is_err());
@@ -227,6 +241,7 @@ fn test_gpio_button_rejects_serial_connection() {
             baud_rate: 9600,
         }),
         settings: None,
+        channels: None,
     };
     let result = GpioButton::from_config(&cfg);
     assert!(result.is_err());
@@ -247,9 +262,13 @@ fn test_gpio_button_tcp_fails_without_server() {
             framing: false,
         }),
         settings: None,
+        channels: None,
     };
     let result = GpioButton::from_config(&cfg);
-    assert!(result.is_err(), "expected connection failure to unreachable server");
+    assert!(
+        result.is_err(),
+        "expected connection failure to unreachable server"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +315,7 @@ fn test_register_sensors_populates_state() {
         synthetic_sensor_config("IMU"),
         synthetic_sensor_config("ENV"),
     ];
-    let mut state = AppState::new("localhost:1883".into(), true, 100);
+    let mut state = AppState::new(true);
     register_sensors(&mut state, &sensors);
 
     assert_eq!(state.sensor_statuses.len(), 2);

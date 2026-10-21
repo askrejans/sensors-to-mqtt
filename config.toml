@@ -1,16 +1,24 @@
 # sensors-to-mqtt — config.toml
-# Priority (highest → lowest):
-#   SENSORS_TO_MQTT__* env vars  >  this file  >  built-in defaults
 #
-# Multiple sensors are supported. Each [[sensors]] block defines one device.
-# Supported connection types: i2c | gpio
-# Supported drivers:  mpu6500 | bmp280 | bme280 | sht31 | bh1750 | ina219 | ads1115 | gpio_button | synthetic
+# Copy this file to /etc/sensors-to-mqtt/settings.toml (or pass with --config).
+# All values shown are the built-in defaults unless noted otherwise.
+# `sensors-to-mqtt --scan` lists the chips on /dev/i2c-1 with a ready
+# [[sensors]] block for each; `--check-config` validates this file.
+#
+# Environment variable overrides (highest priority):
+#   SENSORS_TO_MQTT_MQTT_HOST=broker.local
+#   SENSORS_TO_MQTT_HTTP_BIND=0.0.0.0
+#   SENSORS_TO_MQTT_LOG_LEVEL=debug
+#   (SENSORS_TO_MQTT__MQTT__HOST, the nested form of 0.5, still works)
+#
+# Supported drivers:
+#   mpu6500 | bmp280 | bme280 | sht31 | bh1750 | ina219 | ads1115 | gpio_button | sds011 | synthetic
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log_level = "info"   # trace | debug | info | warn | error
-log_json  = false    # true = JSON structured output (useful for systemd)
+log_json  = false    # true = JSON lines (recommended for systemd / journald)
 
 # ---------------------------------------------------------------------------
 # TUI
@@ -24,15 +32,54 @@ tui_refresh_rate_ms = 100
 enabled         = true
 host            = "localhost"
 port            = 1883
-base_topic      = "/SENSORS"
-client_id       = "sensors-to-mqtt"
-keep_alive_secs = 20
-# username = ""
-# password = ""
+base_topic      = "/SENSORS"   # the G86 car uses "/GOLF86/SENSORS"
+# client_id     = "sensors-to-mqtt"   # default: unique per process
+keep_alive_secs = 30
+# username      = ""
+# password      = ""
+# password_file = "/run/secrets/mqtt_password"   # instead of password
+qos             = 0            # live data; status and discovery always use 1
+# use_tls       = false
+# ca_cert_path  = "/etc/ssl/certs/broker-ca.pem"
+# client_cert_path = ""
+# client_key_path  = ""
+
+# What to publish:
+#   canonical      <base>/<sensor>/telemetry  G86 envelope, every reading
+#   json           <base>/<sensor>/state      every field, retained
+#   legacy         <base>/IMU/<sensor>/INFO|FILTERED|DERIVED  (topics of 0.5)
+#   homeassistant  Home Assistant discovery for every channel
+formats         = ["canonical", "json"]
+max_rate_hz     = 10           # json and legacy, per sensor; 0 = every reading
+homeassistant_prefix = "homeassistant"
+
+# Consumers on slow links (the G86 displays) can ask on demand: publish a
+# reply topic to <base>/telemetry/get and receive every fresh channel there.
 
 # ---------------------------------------------------------------------------
-# Sensors  (add one [[sensors]] block per device)
+# HTTP API, web dashboard and Prometheus metrics
 # ---------------------------------------------------------------------------
+[http]
+enabled = true
+bind    = "127.0.0.1"   # "0.0.0.0" for the network; then also set a token
+port    = 9092
+# token = "change-me"   # bearer token for /api/* (health and metrics stay open)
+# cors_origin = "https://dashboard.example"
+ui      = true          # web dashboard at http://<bind>:<port>/
+
+# ---------------------------------------------------------------------------
+# Sensors  — add one [[sensors]] block per physical device
+# ---------------------------------------------------------------------------
+#
+# Common to every sensor:
+#   [sensors.settings]
+#   interval_ms  = 20     # time between reads (default per driver: IMU 20,
+#                         # button 10, SDS011 1000, BH1750 200, others 100)
+#   history_size = 600    # rolling window kept for TUI sparklines
+#
+#   [sensors.channels]    # rename or drop canonical channels
+#   temperature = "cabinC"
+#   altitude_m  = ""
 
 # --- MPU-6500: 6-axis IMU (acceleration + gyroscope) ----------------------
 [[sensors]]
@@ -121,8 +168,8 @@ history_size = 600
 # address = 0x48   # 0x48–0x4B depending on ADDR pin
 #
 # [sensors.settings]
-# gain        = "pga_4_096v"
-# sample_rate = "sps_128"
+# gain        = 4.096   # PGA full-scale range (V): 6.144|4.096|2.048|1.024|0.512|0.256
+# sample_rate = 128     # SPS: 8|16|32|64|128|250|475|860
 #
 # [[sensors.settings.channels]]
 # index  = 0

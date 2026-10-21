@@ -24,8 +24,8 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use crate::config::{ConnectionConfig, SensorConfig};
-use crate::transport::FramedTcpReader;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+use crate::transport::FramedTcpReader;
 
 // ---------------------------------------------------------------------------
 // Frame constants

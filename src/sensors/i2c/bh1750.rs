@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::config::SensorConfig;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
-use crate::transport::{open_i2c, I2cBus};
+use crate::transport::{I2cBus, open_i2c};
 
 // Measurement commands (datasheet §5)
 const CMD_POWER_ON: u8 = 0x01;

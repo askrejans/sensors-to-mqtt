@@ -33,13 +33,13 @@ pub fn create_sensor(config: &SensorConfig) -> Result<Box<dyn Sensor>> {
         "ina219" => Ok(Box::new(super::i2c::ina219::Ina219::from_config(config)?)),
         "ads1115" => Ok(Box::new(super::i2c::ads1115::Ads1115::from_config(config)?)),
 
-        "gpio_button" => Ok(Box::new(
-            super::gpio::button::GpioButton::from_config(config)?,
-        )),
+        "gpio_button" => Ok(Box::new(super::gpio::button::GpioButton::from_config(
+            config,
+        )?)),
 
-        "sds011" => Ok(Box::new(
-            super::serial::sds011::Sds011::from_config(config)?,
-        )),
+        "sds011" => Ok(Box::new(super::serial::sds011::Sds011::from_config(
+            config,
+        )?)),
 
         other => bail!(
             "Unknown sensor driver: '{}'. Available: synthetic, mpu6500, \

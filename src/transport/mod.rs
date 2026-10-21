@@ -5,5 +5,5 @@
 
 pub mod framing;
 pub mod i2c_bus;
-pub use framing::{tcp_read_framed, FramedTcpReader};
-pub use i2c_bus::{open_i2c, I2cBus};
+pub use framing::{FramedTcpReader, tcp_read_framed};
+pub use i2c_bus::{I2cBus, open_i2c};

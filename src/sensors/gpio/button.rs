@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::config::{ConnectionConfig, SensorConfig};
-use crate::transport::tcp_read_framed;
 use crate::sensors::{FieldDescriptor, Sensor, SensorData, VizType};
+use crate::transport::tcp_read_framed;
 
 // ---------------------------------------------------------------------------
 // Field descriptors
@@ -74,8 +74,7 @@ impl Transport {
         match self {
             #[cfg(target_os = "linux")]
             Transport::Sysfs { value_path, .. } => {
-                let s =
-                    std::fs::read_to_string(value_path).context("reading GPIO sysfs value")?;
+                let s = std::fs::read_to_string(value_path).context("reading GPIO sysfs value")?;
                 Ok(s.trim() == "1")
             }
             Transport::Tcp { stream, framing } => {
@@ -121,10 +120,8 @@ impl GpioButton {
         match &cfg.connection {
             #[cfg(target_os = "linux")]
             ConnectionConfig::Gpio(g) => {
-                let value_path = std::path::PathBuf::from(format!(
-                    "/sys/class/gpio/gpio{}/value",
-                    g.pin
-                ));
+                let value_path =
+                    std::path::PathBuf::from(format!("/sys/class/gpio/gpio{}/value", g.pin));
                 Ok(Self {
                     name: cfg.name.clone(),
                     transport: Transport::Sysfs {
@@ -163,7 +160,10 @@ impl GpioButton {
                     .context("Failed to set TCP write timeout")?;
                 Ok(Self {
                     name: cfg.name.clone(),
-                    transport: Transport::Tcp { stream, framing: t.framing },
+                    transport: Transport::Tcp {
+                        stream,
+                        framing: t.framing,
+                    },
                     active_low: false,
                     debounce_ms: 50,
                     enabled: cfg.enabled,
@@ -207,15 +207,11 @@ impl Sensor for GpioButton {
         if let Transport::Sysfs { value_path, pin } = &self.transport {
             let pin_str = pin.to_string();
             if !value_path.exists() {
-                std::fs::write("/sys/class/gpio/export", &pin_str)
-                    .context("exporting GPIO pin")?;
+                std::fs::write("/sys/class/gpio/export", &pin_str).context("exporting GPIO pin")?;
                 let deadline = Instant::now() + Duration::from_millis(500);
                 while !value_path.exists() {
                     if Instant::now() > deadline {
-                        anyhow::bail!(
-                            "GPIO{} sysfs entry did not appear after export",
-                            pin
-                        );
+                        anyhow::bail!("GPIO{} sysfs entry did not appear after export", pin);
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -242,16 +238,16 @@ impl Sensor for GpioButton {
             self.last_state = Some(raw);
         }
 
-        if let Some(until) = self.debounce_until {
-            if now >= until {
-                self.debounce_until = None;
-                if raw != self.stable_state {
-                    if raw {
-                        self.press_count += 1;
-                    }
-                    self.stable_state = raw;
-                    self.state_entered = now;
+        if let Some(until) = self.debounce_until
+            && now >= until
+        {
+            self.debounce_until = None;
+            if raw != self.stable_state {
+                if raw {
+                    self.press_count += 1;
                 }
+                self.stable_state = raw;
+                self.state_entered = now;
             }
         }
 
