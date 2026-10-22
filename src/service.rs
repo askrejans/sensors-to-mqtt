@@ -292,6 +292,8 @@ pub async fn run_hub(
                     if let Some(st) = s.sensor_statuses.get_mut(&sensor) {
                         if !connected && st.connected {
                             Counters::inc(&shared.counters.reconnects);
+                        } else if !connected && error.is_some() {
+                            Counters::inc(&shared.counters.init_errors);
                         }
                         st.connected = connected;
                         st.last_error = error;

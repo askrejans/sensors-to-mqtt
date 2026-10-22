@@ -31,7 +31,9 @@ service it runs headless.
   - `json`: a retained per-sensor state document with every field.
   - `homeassistant`: discovery for every channel.
   - `legacy`: the IMU topics of 0.5.
-  - An `online`/`offline` status with a last will.
+  - An `online`/`offline` status with a last will, and a retained
+    `<base>/health` document (rate, sample age, fresh channels, errors,
+    clock state) for the G86 car computer.
   - TLS, and the password from a file.
 - **HTTP API and web dashboard** on port 9092:
   - Dashboard: G-ball, gauges, per-sensor fields, charts, diagnostics and
@@ -163,9 +165,10 @@ ones:
 |---|---|---|
 | `log_level` | `info` | trace, debug, info, warn, error |
 | `log_json` | `false` | JSON log lines |
+| `car` | — | G86 car slug (`^[a-z0-9][a-z0-9-]{0,31}$`); without an explicit `mqtt.base_topic` the base becomes `/g86/<car>/sensors`. Env `SENSORS_TO_MQTT_CAR` |
 | `mqtt.enabled` | `true` | |
 | `mqtt.host` / `mqtt.port` | `localhost` / `1883` | |
-| `mqtt.base_topic` | `/SENSORS` | the G86 car uses `/GOLF86/SENSORS` |
+| `mqtt.base_topic` | `/SENSORS`, or `/g86/<car>/sensors` when `car` is set | an explicit value always wins |
 | `mqtt.client_id` | unique per process | |
 | `mqtt.username` / `mqtt.password` / `mqtt.password_file` | — | |
 | `mqtt.qos` | `0` | live data |
@@ -466,16 +469,48 @@ noise   = 0.02   # noise amplitude
 
 ## MQTT topics
 
-With `base_topic = "/GOLF86/SENSORS"` and a sensor named `imu`:
+The base topic is chosen in this order:
+
+| Configuration | Base topic |
+|---|---|
+| `mqtt.base_topic` set (file or `SENSORS_TO_MQTT_MQTT_BASE_TOPIC`) | that value, unchanged |
+| only `car = "golf86"` (or `SENSORS_TO_MQTT_CAR`) | `/g86/golf86/sensors` (G86 car computer namespace) |
+| neither | `/SENSORS` (legacy default; existing installs keep it) |
+
+The startup log names the base and where it came from. g86-logger writes
+`car` for you.
+
+With `car = "golf86"` and a sensor named `imu`:
 
 | Topic | Format | Retained | Payload |
 |---|---|---|---|
-| `/GOLF86/SENSORS/imu/telemetry` | `canonical` | no | G86 envelope, every reading |
-| `/GOLF86/SENSORS/imu/state` | `json` | yes | `{"timestampMs", "sequence", "sensor", "driver", "fields", "channels"}`, ≤ `max_rate_hz` |
-| `/GOLF86/SENSORS/IMU/imu/INFO`, `FILTERED`, `DERIVED` | `legacy` | no | the topics of 0.5, ≤ `max_rate_hz` |
+| `/g86/golf86/sensors/imu/telemetry` | `canonical` | no | G86 envelope, every reading |
+| `/g86/golf86/sensors/imu/state` | `json` | yes | `{"timestampMs", "sequence", "sensor", "driver", "fields", "channels"}`, ≤ `max_rate_hz` |
+| `/g86/golf86/sensors/IMU/imu/INFO`, `FILTERED`, `DERIVED` | `legacy` | no | the topics of 0.5, ≤ `max_rate_hz` |
 | `homeassistant/sensor/<node>/<channel>/config` | `homeassistant` | yes | discovery, on connect |
-| `/GOLF86/SENSORS/status` | always | yes | `online` / `offline` (last will) |
-| `/GOLF86/SENSORS/telemetry/get` | always (in) | — | on demand: the payload is a reply topic |
+| `/g86/golf86/sensors/status` | always | yes | `online` / `offline` (last will) |
+| `/g86/golf86/sensors/health` | always | yes | bridge health (below), every 5 s and on a state change |
+| `/g86/golf86/sensors/telemetry/get` | always (in) | — | on demand: the payload is a reply topic |
+
+Bridge health (G86 car computer contract):
+
+```json
+{"schema":1,"bridge":"sensors-to-mqtt","version":"0.6.1","bootId":"4f2a-1c9e0b7d3a21",
+ "timestampMs":1792621857245,"state":"ok","link":"connected",
+ "sources":["sensors/mpu6500/imu"],"rateHz":50.0,"ageMs":12,
+ "channels":["lateralG","longitudinalG","verticalG","yawRateDegS"],
+ "errors":{"read":0,"init":0,"reconnects":0},"clockSynced":true,"sensors":{"imu":"ok"}}
+```
+
+`state` is `down` when no sensor delivers (nothing for 10 s), `degraded` when
+a sensor is down, the newest reading is older than 2 s or an error counter
+rose in the last 5 s, else `ok`. `link` is `connected` while a sensor reads,
+`disconnected` after a failed open/read, `connecting` before. `rateHz` counts
+canonical readings over 5 s (all sensors), `ageMs` is the age of the newest
+capture time, `channels` the ones updated in the last 2 s. `clockSynced`
+reads the kernel clock state on Linux (NTP/chrony synchronised); it is
+always `true` elsewhere. A clean shutdown publishes a final `down` document,
+then `offline`.
 
 The canonical envelope:
 

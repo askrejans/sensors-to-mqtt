@@ -1,6 +1,7 @@
 //! Outputs. Each subscribes to the bus independently; a slow or failing output
 //! never affects the sensors or the other outputs.
 
+pub mod health;
 pub mod http;
 pub mod mqtt;
 pub mod web;

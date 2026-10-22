@@ -170,6 +170,8 @@ pub struct ChannelState {
 pub struct Counters {
     pub readings: AtomicU64,
     pub read_errors: AtomicU64,
+    /// Failed driver opens (wrong address, missing bus, chip not answering).
+    pub init_errors: AtomicU64,
     pub reconnects: AtomicU64,
     pub mqtt_published: AtomicU64,
     pub mqtt_dropped: AtomicU64,

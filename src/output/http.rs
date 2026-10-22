@@ -198,6 +198,7 @@ fn counters(shared: &Shared) -> serde_json::Value {
     json!({
         "readings": Counters::get(&c.readings),
         "read_errors": Counters::get(&c.read_errors),
+        "init_errors": Counters::get(&c.init_errors),
         "reconnects": Counters::get(&c.reconnects),
         "mqtt_published": Counters::get(&c.mqtt_published),
         "mqtt_dropped": Counters::get(&c.mqtt_dropped),
@@ -412,6 +413,13 @@ pub fn render_metrics(shared: &Shared) -> String {
         "counter",
         "Failed sensor reads",
         Counters::get(&c.read_errors),
+    );
+    metric(
+        &mut o,
+        "sensor_init_errors_total",
+        "counter",
+        "Failed sensor driver opens",
+        Counters::get(&c.init_errors),
     );
     metric(
         &mut o,

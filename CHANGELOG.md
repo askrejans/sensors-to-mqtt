@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1
+
+### Added
+- `car` setting (`SENSORS_TO_MQTT_CAR`): with a G86 car slug and no explicit
+  `mqtt.base_topic`, the base becomes `/g86/<car>/sensors`, the car computer
+  namespace. An explicit `mqtt.base_topic` still wins, and without `car` the
+  default stays `/SENSORS`, so existing installs are unchanged. The startup
+  log names the base topic and where it came from.
+- `<base>/health`: a retained bridge health document (schema 1) for the car
+  computer and the G86 app — `state` (`ok`/`degraded`/`down`), `link`,
+  `sources`, `rateHz`, `ageMs`, fresh `channels`, `errors` (`read`, `init`,
+  `reconnects`), `clockSynced` and per-sensor `sensors`. Published every 5 s,
+  at once when the state or link changes, and as a final `down` on a clean
+  shutdown before `offline`.
+- Prometheus counter of failed driver opens (`init` in the health errors).
+
 ## 0.6.0
 
 A rework in line with ecu-to-mqtt and gps-to-mqtt.

@@ -8,6 +8,8 @@
 //! | `homeassistant` | `<prefix>/sensor/<node>/<channel>/config` | yes      | on connect                    |
 //!
 //! `<base>/status` is `online`/`offline` (retained; `offline` is the last will).
+//! `<base>/health` is the bridge health document (retained, every 5 s and on
+//! a state change; see [`super::health`]).
 //!
 //! **On demand** (for consumers on slow links, such as the G86 displays): a
 //! message on `<base>/telemetry/get` whose payload is a reply topic is
@@ -20,6 +22,7 @@
 //! Publishing never blocks acquisition: while the broker is unreachable live
 //! readings are dropped and counted, and state is re-sent after reconnecting.
 
+use super::health;
 use crate::channels;
 use crate::config::{AppConfig, MqttFormat};
 use crate::models::{CHANNEL_MAX_AGE_MS, Counters, MqttStatus, Shared, Stamped};
@@ -527,6 +530,10 @@ struct Publisher {
     /// Per sensor: when its state was last published, and its latest reading.
     last_state_at: HashMap<String, Instant>,
     latest: HashMap<String, Arc<Stamped>>,
+    health: health::Tracker,
+    sources: Vec<String>,
+    /// Last published `(state, link)` and when.
+    health_sent: Option<(&'static str, &'static str, Instant)>,
 }
 
 impl Publisher {
@@ -535,12 +542,34 @@ impl Publisher {
             .then(|| Duration::from_secs_f64(1.0 / config.mqtt.max_rate_hz));
         Self {
             qos: qos(config.mqtt.qos),
-            config,
             client,
             shared,
             min_interval,
             last_state_at: HashMap::new(),
             latest: HashMap::new(),
+            health: health::Tracker::default(),
+            sources: health::sources(&config),
+            health_sent: None,
+            config,
+        }
+    }
+
+    /// `<base>/health`, retained: when forced, when `state`/`link` changed,
+    /// or every 5 s.
+    fn publish_health(&mut self, force: bool) {
+        let (doc, state, link) = health::document(&self.shared, &mut self.health, &self.sources);
+        let now = Instant::now();
+        let due = match self.health_sent {
+            Some((s, l, at)) => {
+                force || s != state || l != link || now.duration_since(at) >= health::PERIOD
+            }
+            None => true,
+        };
+        if due {
+            let t = topic(&self.config.mqtt.base_topic, "health");
+            if self.send(t, doc.to_string(), true, QoS::AtLeastOnce) {
+                self.health_sent = Some((state, link, now));
+            }
         }
     }
 
@@ -575,6 +604,7 @@ impl Publisher {
         for stamped in latest {
             self.publish_state(&stamped, true);
         }
+        self.publish_health(true);
     }
 
     /// The per-sensor state document and legacy topics, rate-limited per sensor.
@@ -608,6 +638,9 @@ impl Publisher {
 
     fn on_sample(&mut self, stamped: Arc<Stamped>, connected: bool) {
         self.latest.insert(stamped.sensor.clone(), stamped.clone());
+        if stamped.envelope.is_some() {
+            self.health.record(Instant::now(), stamped.captured_ms);
+        }
         if !connected {
             Counters::inc(&self.shared.counters.mqtt_dropped);
             return;
@@ -632,9 +665,12 @@ impl Publisher {
         cancel: CancellationToken,
     ) {
         let mut connected = false;
+        let mut health_tick = tokio::time::interval(Duration::from_secs(1));
+        health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
+                _ = health_tick.tick() => if connected { self.publish_health(false); },
                 changed = conn.changed() => {
                     if changed.is_err() { break; }
                     connected = *conn.borrow_and_update();
@@ -648,6 +684,14 @@ impl Publisher {
             }
         }
         if connected {
+            let (mut doc, _, _) = health::document(&self.shared, &mut self.health, &self.sources);
+            health::shutdown_document(&mut doc);
+            self.send(
+                topic(&self.config.mqtt.base_topic, "health"),
+                doc.to_string(),
+                true,
+                QoS::AtLeastOnce,
+            );
             self.send(
                 topic(&self.config.mqtt.base_topic, "status"),
                 "offline".into(),
@@ -858,8 +902,8 @@ mod tests {
         p.on_connect();
         assert_eq!(
             published(),
-            4 + 1 + 2,
-            "status, then each sensor's latest state"
+            4 + 1 + 2 + 1,
+            "status, each sensor's latest state, then health"
         );
     }
 
