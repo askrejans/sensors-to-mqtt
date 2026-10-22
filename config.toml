@@ -21,6 +21,14 @@ log_level = "info"   # trace | debug | info | warn | error
 log_json  = false    # true = JSON lines (recommended for systemd / journald)
 
 # ---------------------------------------------------------------------------
+# G86 car
+# ---------------------------------------------------------------------------
+# Slug of the car (lowercase letters, digits, '-'; at most 32). Without an
+# explicit mqtt.base_topic the base becomes /g86/<car>/sensors. Leave unset
+# (and base_topic unset) to keep the legacy default /SENSORS.
+# car = "golf86"
+
+# ---------------------------------------------------------------------------
 # TUI
 # ---------------------------------------------------------------------------
 tui_refresh_rate_ms = 100
@@ -32,7 +40,7 @@ tui_refresh_rate_ms = 100
 enabled         = true
 host            = "localhost"
 port            = 1883
-base_topic      = "/SENSORS"   # the G86 car uses "/GOLF86/SENSORS"
+# base_topic    = "/SENSORS"   # default; /g86/<car>/sensors when car is set; explicit wins
 # client_id     = "sensors-to-mqtt"   # default: unique per process
 keep_alive_secs = 30
 # username      = ""

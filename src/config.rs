@@ -27,12 +27,40 @@ pub struct AppConfig {
     pub log_level: String,
     pub log_json: bool,
     pub tui_refresh_rate_ms: u64,
+    /// G86 car slug: without an explicit `mqtt.base_topic` the base becomes
+    /// `/g86/<car>/sensors`. Unset keeps the legacy default (`/SENSORS`).
+    pub car: Option<String>,
     pub mqtt: MqttConfig,
     pub http: HttpConfig,
     pub sensors: Vec<SensorConfig>,
     /// File the configuration was loaded from (not a setting).
     #[serde(skip)]
     pub config_path: Option<String>,
+    /// How the base topic was chosen (not a setting).
+    #[serde(skip)]
+    pub base_topic_origin: BaseTopicOrigin,
+}
+
+/// Where `mqtt.base_topic` came from, for the startup log.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BaseTopicOrigin {
+    /// Set in the file or the environment.
+    Explicit,
+    /// Derived from `car`: `/g86/<car>/sensors`.
+    Car,
+    /// Neither: the default of 0.6.0 and earlier (`/SENSORS`).
+    #[default]
+    LegacyDefault,
+}
+
+/// A G86 car slug: `^[a-z0-9][a-z0-9-]{0,31}$`.
+pub fn valid_car(car: &str) -> bool {
+    let b = car.as_bytes();
+    !b.is_empty()
+        && b.len() <= 32
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
 impl Default for AppConfig {
@@ -41,10 +69,12 @@ impl Default for AppConfig {
             log_level: "info".to_string(),
             log_json: false,
             tui_refresh_rate_ms: 100,
+            car: None,
             mqtt: MqttConfig::default(),
             http: HttpConfig::default(),
             sensors: Vec::new(),
             config_path: None,
+            base_topic_origin: BaseTopicOrigin::LegacyDefault,
         }
     }
 }
@@ -361,6 +391,11 @@ impl AppConfig {
         if !levels.contains(&self.log_level.to_lowercase().as_str()) {
             bail!("log_level must be one of {levels:?}");
         }
+        if let Some(car) = &self.car
+            && !valid_car(car)
+        {
+            bail!("car {car:?} must be a slug: lowercase letters, digits and '-', at most 32");
+        }
         let m = &self.mqtt;
         if m.enabled {
             if m.host.trim().is_empty() {
@@ -531,12 +566,21 @@ pub fn load_with_env(
         }
     }
 
-    let mut cfg: AppConfig = builder
-        .build()
-        .context("Failed to build configuration")?
+    let built = builder.build().context("Failed to build configuration")?;
+    let explicit_base = built.get_string("mqtt.base_topic").is_ok();
+    let mut cfg: AppConfig = built
         .try_deserialize()
         .context("Failed to deserialize configuration")?;
     cfg.config_path = used;
+    cfg.car = cfg.car.take().filter(|c| !c.trim().is_empty());
+    cfg.base_topic_origin = if explicit_base {
+        BaseTopicOrigin::Explicit
+    } else if let Some(car) = cfg.car.as_ref().filter(|c| valid_car(c)) {
+        cfg.mqtt.base_topic = format!("/g86/{car}/sensors");
+        BaseTopicOrigin::Car
+    } else {
+        BaseTopicOrigin::LegacyDefault
+    };
     cfg.validate()?;
     Ok(cfg)
 }
@@ -808,6 +852,43 @@ active_low = false
             sensor("b", "mpu6500").replace("driver", "enabled = false\ndriver")
         );
         assert!(load_str(&two, &[]).is_ok());
+    }
+
+    #[test]
+    fn car_sets_the_g86_namespace_unless_the_base_is_explicit() {
+        let cfg = load_str("log_level = \"info\"\n", &[]).unwrap();
+        assert_eq!(cfg.mqtt.base_topic, "/SENSORS");
+        assert_eq!(cfg.base_topic_origin, BaseTopicOrigin::LegacyDefault);
+
+        let cfg = load_str("car = \"golf86\"\n", &[]).unwrap();
+        assert_eq!(cfg.mqtt.base_topic, "/g86/golf86/sensors");
+        assert_eq!(cfg.base_topic_origin, BaseTopicOrigin::Car);
+
+        let cfg = load_str("", &[("SENSORS_TO_MQTT_CAR", "qa-car")]).unwrap();
+        assert_eq!(cfg.mqtt.base_topic, "/g86/qa-car/sensors");
+
+        let cfg = load_str(
+            "car = \"golf86\"\n[mqtt]\nbase_topic = \"/GOLF86/SENSORS\"\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(cfg.mqtt.base_topic, "/GOLF86/SENSORS");
+        assert_eq!(cfg.base_topic_origin, BaseTopicOrigin::Explicit);
+
+        let cfg = load_str(
+            "car = \"golf86\"\n",
+            &[("SENSORS_TO_MQTT_MQTT_BASE_TOPIC", "/X")],
+        )
+        .unwrap();
+        assert_eq!(cfg.mqtt.base_topic, "/X");
+
+        for bad in ["Golf86", "-x", "a_b", "a/b", &"a".repeat(33)] {
+            assert!(
+                load_str(&format!("car = \"{bad}\"\n"), &[]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(valid_car("0") && valid_car(&"a".repeat(32)));
     }
 
     #[test]

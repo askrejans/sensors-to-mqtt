@@ -16,7 +16,8 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use sensors_to_mqtt::config::{
-    AppConfig, ConnectionConfig, DRIVERS, I2cConnectionConfig, SensorConfig, load_configuration,
+    AppConfig, BaseTopicOrigin, ConnectionConfig, DRIVERS, I2cConnectionConfig, SensorConfig,
+    load_configuration,
 };
 use sensors_to_mqtt::models::{Info, Shared};
 use sensors_to_mqtt::{output, scan, service, tui};
@@ -202,6 +203,16 @@ async fn main() -> Result<()> {
         );
     }
 
+    if config.mqtt.enabled {
+        let base = &config.mqtt.base_topic;
+        match config.base_topic_origin {
+            BaseTopicOrigin::Explicit => info!("MQTT base topic: {base}"),
+            BaseTopicOrigin::Car => info!("MQTT base topic: {base} (G86 car namespace)"),
+            BaseTopicOrigin::LegacyDefault => info!(
+                "MQTT base topic: {base} (legacy default; set car = \"<slug>\" for /g86/<car>/sensors)"
+            ),
+        }
+    }
     let outputs = output::describe(&config);
     for o in &outputs {
         info!("Output: {o}");
