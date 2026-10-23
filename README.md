@@ -15,7 +15,7 @@ service it runs headless.
 
 This bridge can publish to any MQTT broker. Configure the broker host, credentials and `mqtt.base_topic` for your own installation; use TLS for a broker reached across an untrusted network. The source distribution and ordinary binaries have no account, subscription or activation dependency. Product-specific subscription checks belong to separately built managed distributions.
 
-For a custom namespace, set `mqtt.base_topic` explicitly (for example `/telemetry/car-1/sensors`). An explicit prefix takes precedence over `car`. The optional legacy `car` shortcut keeps its existing `/g86/<car>/…` namespace for compatibility; omitting it does not create an account or select a vehicle profile. Existing defaults and packet fields remain compatible.
+For a custom namespace, set `mqtt.base_topic` explicitly (for example `/telemetry/car-1/sensors`). An explicit prefix takes precedence over `car`. The optional legacy `car` shortcut keeps its existing `/g86/<car>/…` namespace for compatibility; omitting it does not create an account or select a vehicle profile. Packet fields remain compatible. Fresh installations use `/telemetry/sensors`; to keep the former default, explicitly set the prefix to `/SENSORS` before upgrading.
 
 ## Features
 
@@ -174,7 +174,7 @@ ones:
 | `car` | — | G86 car slug (`^[a-z0-9][a-z0-9-]{0,31}$`); without an explicit `mqtt.base_topic` the base becomes `/g86/<car>/sensors`. Env `SENSORS_TO_MQTT_CAR` |
 | `mqtt.enabled` | `true` | |
 | `mqtt.host` / `mqtt.port` | `localhost` / `1883` | |
-| `mqtt.base_topic` | `/SENSORS`, or `/g86/<car>/sensors` when `car` is set | an explicit value always wins |
+| `mqtt.base_topic` | `/telemetry/sensors`, or `/g86/<car>/sensors` when `car` is set | an explicit value always wins |
 | `mqtt.client_id` | unique per process | |
 | `mqtt.username` / `mqtt.password` / `mqtt.password_file` | — | |
 | `mqtt.qos` | `0` | live data |
@@ -481,7 +481,7 @@ The base topic is chosen in this order:
 |---|---|
 | `mqtt.base_topic` set (file or `SENSORS_TO_MQTT_MQTT_BASE_TOPIC`) | that value, unchanged |
 | only `car = "golf86"` (or `SENSORS_TO_MQTT_CAR`) | `/g86/golf86/sensors` (G86 car computer namespace) |
-| neither | `/SENSORS` (legacy default; existing installs keep it) |
+| neither | `/telemetry/sensors` (default) |
 
 The startup log names the base and where it came from. g86-logger writes
 `car` for you.

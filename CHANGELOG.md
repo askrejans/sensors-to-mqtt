@@ -1,8 +1,10 @@
 # Changelog
 
-## 0.6.2
+## 0.7.0
 
-- Document standalone use with arbitrary MQTT brokers and explicit topic prefixes; keep existing topic and telemetry contracts unchanged.
+- **Migration:** an unconfigured installation now publishes below `/telemetry/sensors` instead of `/SENSORS`. Set `mqtt.base_topic` explicitly to `/SENSORS` before upgrading if consumers need the former default. Explicit settings and optional `car` namespaces keep their topics.
+
+- Document standalone use with arbitrary MQTT brokers and explicit topic prefixes; preserve explicit topic prefixes and telemetry packet contracts.
 
 ## 0.6.1
 

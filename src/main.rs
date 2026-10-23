@@ -208,8 +208,8 @@ async fn main() -> Result<()> {
         match config.base_topic_origin {
             BaseTopicOrigin::Explicit => info!("MQTT base topic: {base}"),
             BaseTopicOrigin::Car => info!("MQTT base topic: {base} (G86 car namespace)"),
-            BaseTopicOrigin::LegacyDefault => info!(
-                "MQTT base topic: {base} (legacy default; set car = \"<slug>\" for /g86/<car>/sensors)"
+            BaseTopicOrigin::Default => info!(
+                "MQTT base topic: {base} (default; set mqtt.base_topic to choose another namespace)"
             ),
         }
     }

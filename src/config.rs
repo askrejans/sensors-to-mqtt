@@ -28,7 +28,7 @@ pub struct AppConfig {
     pub log_json: bool,
     pub tui_refresh_rate_ms: u64,
     /// G86 car slug: without an explicit `mqtt.base_topic` the base becomes
-    /// `/g86/<car>/sensors`. Unset keeps the legacy default (`/SENSORS`).
+    /// `/g86/<car>/sensors`. Unset uses the generic default (`/telemetry/sensors`).
     pub car: Option<String>,
     pub mqtt: MqttConfig,
     pub http: HttpConfig,
@@ -48,9 +48,9 @@ pub enum BaseTopicOrigin {
     Explicit,
     /// Derived from `car`: `/g86/<car>/sensors`.
     Car,
-    /// Neither: the default of 0.6.0 and earlier (`/SENSORS`).
+    /// Neither: the generic default (`/telemetry/sensors`).
     #[default]
-    LegacyDefault,
+    Default,
 }
 
 /// A G86 car slug: `^[a-z0-9][a-z0-9-]{0,31}$`.
@@ -74,7 +74,7 @@ impl Default for AppConfig {
             http: HttpConfig::default(),
             sensors: Vec::new(),
             config_path: None,
-            base_topic_origin: BaseTopicOrigin::LegacyDefault,
+            base_topic_origin: BaseTopicOrigin::Default,
         }
     }
 }
@@ -163,7 +163,7 @@ impl Default for MqttConfig {
             enabled: true,
             host: "localhost".to_string(),
             port: 1883,
-            base_topic: "/SENSORS".to_string(),
+            base_topic: "/telemetry/sensors".to_string(),
             client_id: None,
             keep_alive_secs: 30,
             username: None,
@@ -579,7 +579,7 @@ pub fn load_with_env(
         cfg.mqtt.base_topic = format!("/g86/{car}/sensors");
         BaseTopicOrigin::Car
     } else {
-        BaseTopicOrigin::LegacyDefault
+        BaseTopicOrigin::Default
     };
     cfg.validate()?;
     Ok(cfg)
@@ -611,7 +611,7 @@ mod tests {
         assert_eq!(cfg.port, 1883);
         assert_eq!(cfg.host, "localhost");
         assert!(cfg.enabled);
-        assert_eq!(cfg.base_topic, "/SENSORS");
+        assert_eq!(cfg.base_topic, "/telemetry/sensors");
         assert_eq!(cfg.formats, [MqttFormat::Canonical, MqttFormat::Json]);
     }
 
@@ -857,8 +857,12 @@ active_low = false
     #[test]
     fn car_sets_the_g86_namespace_unless_the_base_is_explicit() {
         let cfg = load_str("log_level = \"info\"\n", &[]).unwrap();
-        assert_eq!(cfg.mqtt.base_topic, "/SENSORS");
-        assert_eq!(cfg.base_topic_origin, BaseTopicOrigin::LegacyDefault);
+        assert_eq!(cfg.mqtt.base_topic, "/telemetry/sensors");
+        assert_eq!(cfg.base_topic_origin, BaseTopicOrigin::Default);
+
+        let old = load_str("[mqtt]\nbase_topic = \"/SENSORS\"\n", &[]).unwrap();
+        assert_eq!(old.mqtt.base_topic, "/SENSORS");
+        assert_eq!(old.base_topic_origin, BaseTopicOrigin::Explicit);
 
         let cfg = load_str("car = \"golf86\"\n", &[]).unwrap();
         assert_eq!(cfg.mqtt.base_topic, "/g86/golf86/sensors");

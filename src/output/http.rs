@@ -606,7 +606,7 @@ mod tests {
             "sensor-named channels are labelled by name"
         );
         let (_, body) = get(&app, "/api/v1/config", None).await;
-        assert!(body.contains("\"base_topic\":\"/SENSORS\""));
+        assert!(body.contains("\"base_topic\":\"/telemetry/sensors\""));
     }
 
     #[test]
