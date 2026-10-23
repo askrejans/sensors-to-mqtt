@@ -1,10 +1,10 @@
 [package]
 name = "sensors-to-mqtt"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.89"
 license = "GPL-3.0-only"
-description = "Sensors (I2C, GPIO, serial, TCP bridge) to MQTT for the G86 telemetry ecosystem: canonical telemetry, on demand, HTTP API, web dashboard and TUI"
+description = "Sensors (I2C, GPIO, serial, TCP bridge) to MQTT: timestamped telemetry, on demand, HTTP API, web dashboard and TUI"
 repository = "https://github.com/askrejans/sensors-to-mqtt"
 readme = "README.md"
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- Document standalone use with arbitrary MQTT brokers and explicit topic prefixes; keep existing topic and telemetry contracts unchanged.
+
 ## 0.6.1
 
 ### Added

@@ -1,7 +1,7 @@
 # sensors-to-mqtt
 
 Reads I2C, GPIO and serial sensors and publishes them to MQTT, an HTTP API and
-a web dashboard, as part of the G86 telemetry ecosystem next to
+a web dashboard, alongside
 [`ecu-to-mqtt`](https://github.com/askrejans/ecu-to-mqtt) and
 [`gps-to-mqtt`](https://github.com/askrejans/gps-to-mqtt). Sensors can be
 connected **locally** (Linux I2C/GPIO/serial) or **remotely over TCP** through an
@@ -11,9 +11,15 @@ service it runs headless.
 
 ![sensors](https://github.com/user-attachments/assets/835dcf36-17c0-42ce-aec8-379e9177f768)
 
+## Standalone MQTT use
+
+This bridge can publish to any MQTT broker. Configure the broker host, credentials and `mqtt.base_topic` for your own installation; use TLS for a broker reached across an untrusted network. The source distribution and ordinary binaries have no account, subscription or activation dependency. Product-specific subscription checks belong to separately built managed distributions.
+
+For a custom namespace, set `mqtt.base_topic` explicitly (for example `/telemetry/car-1/sensors`). An explicit prefix takes precedence over `car`. The optional legacy `car` shortcut keeps its existing `/g86/<car>/…` namespace for compatibility; omitting it does not create an account or select a vehicle profile. Existing defaults and packet fields remain compatible.
+
 ## Features
 
-- **Canonical G86 telemetry.** Every reading becomes one timestamped envelope
+- **Canonical telemetry.** Every reading becomes one timestamped envelope
   (schema 1, `bootId`, `sequence`) on `<base>/<sensor>/telemetry`, with
   channel names shared across the ecosystem: `lateralG`, `longitudinalG`,
   `yawRateDegS`, `ambientC`, `baroKpa` and so on.
@@ -33,7 +39,7 @@ service it runs headless.
   - `legacy`: the IMU topics of 0.5.
   - An `online`/`offline` status with a last will, and a retained
     `<base>/health` document (rate, sample age, fresh channels, errors,
-    clock state) for the G86 car computer.
+    clock state) for monitoring consumers.
   - TLS, and the password from a file.
 - **HTTP API and web dashboard** on port 9092:
   - Dashboard: G-ball, gauges, per-sensor fields, charts, diagnostics and
